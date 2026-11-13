@@ -1,0 +1,21 @@
+# Dependencies and local tooling
+node_modules/
+.tmp/
+artifacts/
+
+# Private study assets and generated private builds
+/assets/
+/models/
+/Kirito.zip
+/刀剑神域GGO.html
+/弹刃零界.html
+
+# Local diagnostics and editor files
+/$null
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Internal notes from the local development session
+/docs/superpowers/

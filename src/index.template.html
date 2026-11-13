@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#071012">
+  <title>刀剑神域GGO</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23071012'/%3E%3Cpath d='M15 16h19c10 0 17 6 17 16S44 48 34 48H15V16Zm11 9v14h8c5 0 8-3 8-7s-3-7-8-7h-8Z' fill='%23f5ad3d'/%3E%3Cpath d='m38 8 8 8-6 6-8-8 6-6Z' fill='%235de1d4'/%3E%3C/svg%3E">
+  <style>
+__STYLES__
+  </style>
+</head>
+<body>
+  <main id="app">
+    <canvas id="game" aria-label="刀剑神域GGO游戏画面"></canvas>
+    <div id="vignette" aria-hidden="true"></div>
+
+    <section id="hud" class="hidden" aria-label="游戏状态">
+      <div class="hud-top">
+        <div class="brand-lockup">
+          <span class="brand-mark">GGO</span>
+          <span class="brand-sub">GUN GALE ONLINE</span>
+        </div>
+        <div class="objective-wrap">
+          <span class="section-label">当前目标</span>
+          <strong id="objective-text">接入三组战术上行链路</strong>
+          <small id="objective-guide">扫描最近的上行终端</small>
+          <div id="uplink-pips" class="uplink-pips"></div>
+        </div>
+        <div class="run-clock">
+          <span class="section-label">作战时间</span>
+          <strong id="run-time">00:00</strong>
+        </div>
+      </div>
+
+      <div id="crosshair" class="crosshair" aria-hidden="true">
+        <i class="ch-top"></i><i class="ch-right"></i><i class="ch-bottom"></i><i class="ch-left"></i>
+        <b></b>
+      </div>
+      <div id="hitmarker" class="hitmarker" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div id="parry-callout" class="parry-callout">PERFECT PARRY</div>
+
+      <div class="hud-left">
+        <div class="meter-block">
+          <div class="meter-head">
+            <span class="section-label">生命维持</span>
+            <strong id="health-value">100</strong>
+          </div>
+          <div class="meter-track"><i id="health-bar"></i></div>
+        </div>
+        <div class="meter-block compact">
+          <div class="meter-head">
+            <span class="section-label">推进能量</span>
+            <strong id="stamina-value">100</strong>
+          </div>
+          <div class="meter-track energy"><i id="stamina-bar"></i></div>
+        </div>
+      </div>
+
+      <div class="hud-right">
+        <div id="weapon-name" class="weapon-name">ARC-9 脉冲步枪</div>
+        <div class="ammo-line">
+          <strong id="ammo-value">30</strong>
+          <span id="reserve-value">/ 120</span>
+        </div>
+        <div id="magic-hud" class="magic-hud hidden">
+          <div class="magic-readout">
+            <span id="magic-element">火精灵 // 烈火球</span>
+            <b id="mana-value">100</b>
+          </div>
+          <div class="meter-track mana"><i id="mana-bar"></i></div>
+          <div class="charge-readout">
+            <span>术式蓄力</span>
+            <div class="charge-track"><i id="magic-charge-bar"></i></div>
+          </div>
+        </div>
+        <div class="weapon-switch">
+          <span id="gun-mode" class="active">1 枪械</span>
+          <span id="blade-mode">2 光刃</span>
+          <span id="magic-mode">3 精灵魔法</span>
+        </div>
+      </div>
+
+      <div id="interaction" class="interaction hidden">
+        <div class="interaction-key">E</div>
+        <div class="interaction-copy">
+          <span id="interaction-label">接入上行链路</span>
+          <div class="interaction-track"><i id="interaction-bar"></i></div>
+        </div>
+      </div>
+
+      <div id="boss-hud" class="boss-hud hidden">
+        <div class="boss-head">
+          <span>区域守门者</span>
+          <strong>NOCTIS // 断界机兵</strong>
+          <em id="boss-phase">PHASE I</em>
+        </div>
+        <div class="boss-track"><i id="boss-bar"></i></div>
+      </div>
+
+      <div id="toast" class="toast" role="status"></div>
+      <div id="damage-indicator" class="damage-indicator" aria-hidden="true"></div>
+      <div class="live-stats">
+        <span>击破 <b id="kill-count">0</b></span>
+        <span>弹反 <b id="parry-count">0</b></span>
+      </div>
+    </section>
+
+    <section id="title-screen" class="screen title-screen">
+      <div class="title-content">
+        <div class="title-kicker">UNOFFICIAL NON-COMMERCIAL STUDY TRIBUTE // GUN-BLADE COMBAT</div>
+        <h1 aria-label="刀剑神域GGO"><span>刀剑神域</span><em>GGO</em></h1>
+        <p>进入枪火与光刃交错的 GGO 虚拟战区，切断三组上行链路，击破断界机兵并撤离。</p>
+        <div class="title-actions">
+          <button id="start-button" class="primary-button">进入战区</button>
+          <span id="build-label" class="build-label">EDUCATIONAL BUILD / WEBGL2</span>
+        </div>
+        <div class="control-strip">
+          <span><b>WASD</b> 移动</span>
+          <span><b>鼠标</b> 视角</span>
+          <span><b>LMB</b> 攻击 / 射击</span>
+          <span><b>RMB</b> 瞄准 / 格挡</span>
+          <span><b>Q</b> 循环武器</span>
+          <span><b>1 / 2 / 3</b> 枪械 / 光刃 / 魔法</span>
+          <span><b>R</b> 换弹 / 循环元素</span>
+          <span><b>E</b> 交互</span>
+          <span><b>Space</b> 跳跃</span>
+          <span><b>Shift</b> 冲刺</span>
+          <span><b>C</b> 蹲伏</span>
+          <span><b>Esc</b> 暂停</span>
+        </div>
+        <ol class="mission-brief" aria-label="胜利条件">
+          <li><b>01</b><span>切断 3 条战术链路</span></li>
+          <li><b>02</b><span>击破 NOCTIS</span></li>
+          <li><b>03</b><span>返回起点撤离</span></li>
+        </ol>
+        <p id="legal-notice" class="legal-notice">
+          非官方、非商业教育致敬项目。项目未获 SAO 权利方授权，公开版不包含原作角色模型、
+          原曲、纹理或其他美术资源。
+        </p>
+        <div class="bgm-dock">
+          <div>
+            <span class="section-label">GAME BGM // OPTIONAL LOCAL AUDIO</span>
+            <strong id="bgm-status-title">BGM 未载入</strong>
+          </div>
+          <button id="bgm-pick-title" class="audio-button" type="button">更换本地 BGM</button>
+          <small>可选择你合法持有的本地音频；文件仅在当前浏览器内播放，不会上传。</small>
+        </div>
+      </div>
+      <div class="title-side">
+        <span>GUN GALE ONLINE</span>
+        <strong>GGO//01</strong>
+        <small id="model-attribution">程序化原创角色 // 非官方教育致敬，未授予 SAO 权利。</small>
+      </div>
+    </section>
+
+    <section id="pause-screen" class="screen pause-screen hidden">
+      <div class="pause-panel">
+        <span class="section-label">战术暂停</span>
+        <h2>连接已挂起</h2>
+        <div class="settings-grid">
+          <label>
+            <span>画质</span>
+            <select id="quality-select">
+              <option value="high">高</option>
+              <option value="medium">中</option>
+              <option value="low">低</option>
+            </select>
+          </label>
+          <label>
+            <span>视野 <b id="fov-value">72</b></span>
+            <input id="fov-input" type="range" min="58" max="92" value="72">
+          </label>
+          <label>
+            <span>鼠标灵敏度 <b id="sensitivity-value">1.0</b></span>
+            <input id="sensitivity-input" type="range" min="0.35" max="2.2" step="0.05" value="1">
+          </label>
+          <label>
+            <span>音量 <b id="volume-value">70</b></span>
+            <input id="volume-input" type="range" min="0" max="100" value="70">
+          </label>
+          <div class="bgm-setting">
+            <span>游戏 BGM <b id="bgm-status-pause">载入中</b></span>
+            <button id="bgm-pick-pause" class="audio-button" type="button">更换本地文件</button>
+          </div>
+        </div>
+        <div class="pause-actions">
+          <button id="resume-button" class="primary-button">继续作战</button>
+          <button id="restart-button" class="secondary-button">重新部署</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="end-screen" class="screen end-screen hidden">
+      <div class="end-content">
+        <span id="end-kicker" class="section-label">区域清剿完成</span>
+        <h2 id="end-title">链路已切断</h2>
+        <p id="end-copy">断界机兵已被击破，GGO 战区链路解除，撤离通道开放。</p>
+        <div class="end-stats">
+          <div><span>作战时间</span><strong id="end-time">00:00</strong></div>
+          <div><span>击破单位</span><strong id="end-kills">0</strong></div>
+          <div><span>完美弹反</span><strong id="end-parries">0</strong></div>
+        </div>
+        <button id="redeploy-button" class="primary-button">重新部署</button>
+      </div>
+    </section>
+
+    <div id="touch-controls" class="touch-controls hidden">
+      <div id="move-stick" class="move-stick"><i></i></div>
+      <div class="touch-actions">
+        <button id="touch-swap" class="touch-button small">换</button>
+        <button id="touch-reload" class="touch-button small">装</button>
+        <button id="touch-element" class="touch-button small">元</button>
+        <button id="touch-crouch" class="touch-button small">蹲</button>
+        <button id="touch-magic" class="touch-button small">法</button>
+        <button id="touch-jump" class="touch-button small">跳</button>
+        <button id="touch-block" class="touch-button">格挡</button>
+        <button id="touch-fire" class="touch-button fire">攻击</button>
+      </div>
+    </div>
+
+    <div id="boot" class="boot">
+      <div class="boot-mark">GGO</div>
+      <div class="boot-copy">正在构建 GGO 战区</div>
+      <div class="boot-bar"><i id="boot-progress"></i></div>
+      <small id="boot-detail">INITIALIZING WEBGL2</small>
+    </div>
+    <div id="fatal" class="fatal hidden"></div>
+    <audio id="bgm" preload="metadata" loop hidden__DEFAULT_BGM_ATTR__></audio>
+    <input id="bgm-file" type="file" accept="audio/*,.mp3,.ogg,.m4a,.aac,.wav,.flac" hidden>
+  </main>
+  <script>
+__SCRIPT__
+  </script>
+</body>
+</html>
