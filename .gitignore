@@ -18,4 +18,6 @@ artifacts/
 .idea/
 
 # Internal notes from the local development session
-/docs/superpowers/
+/docs/superpowers/*
+!/docs/superpowers/specs/
+!/docs/superpowers/specs/**/*.md
