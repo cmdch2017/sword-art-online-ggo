@@ -6,11 +6,8 @@ import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 import {
-  MISSION_PHASE,
   WEAPON_MODE,
-  advanceMission,
   clamp,
-  createMissionState,
   createWeaponState,
   nextBladeCombo,
   parryWindowOpen,
@@ -19,6 +16,17 @@ import {
   switchWeaponMode,
   tickWeapon
 } from "./core.mjs";
+import {
+  TRAINING_PROFILE,
+  pickAimAssistTarget
+} from "./difficulty.mjs";
+import {
+  CAMPAIGN_PHASE,
+  advanceCampaign,
+  createCampaignState,
+  currentZone
+} from "./campaign-state.mjs";
+import { ZONES, getZoneById } from "./zone-config.mjs";
 import { AnimationController, chooseAnimationState } from "./animation-controller.js";
 import { BGM_STATUS, createBgmController } from "./bgm-controller.mjs";
 import { MmdPoseController } from "./mmd-pose.js";
@@ -54,7 +62,7 @@ import {
 } from "./weapon-attach.js";
 
 const TAU = Math.PI * 2;
-const WORLD_LIMIT = { minX: -54, maxX: 54, minZ: -49, maxZ: 54 };
+let WORLD_LIMIT = { ...ZONES[0].bounds };
 const DEFAULT_BGM_LABEL = "刀剑神域 GGO BGM";
 const COLORS = {
   ink: 0x050a0b,
@@ -203,7 +211,10 @@ const input = {
   dragY: 0
 };
 
-const mission = createMissionState(3);
+let campaign = createCampaignState(ZONES);
+let activeZone = ZONES[0];
+let zoneMechanics = [];
+let zoneTransitionTimer = 0;
 const weapon = createWeaponState();
 const magic = createMagicState();
 const player = {
@@ -214,8 +225,8 @@ const player = {
   facing: 0,
   verticalVelocity: 0,
   grounded: true,
-  health: 100,
-  maxHealth: 100,
+  health: TRAINING_PROFILE.playerMaxHealth,
+  maxHealth: TRAINING_PROFILE.playerMaxHealth,
   stamina: 100,
   maxStamina: 100,
   dashCooldown: 0,
@@ -349,6 +360,121 @@ window.__danrenBgmDebug = () => ({
     hasSource: false
   })
 });
+
+window.__danrenStateDebug = () => ({
+  elapsed: app.elapsed,
+  running: app.running,
+  paused: app.paused,
+  ended: app.ended,
+  victory: campaign.finalVictory,
+  player: {
+    x: player.position.x,
+    y: player.position.y,
+    z: player.position.z,
+    health: player.health,
+    maxHealth: player.maxHealth,
+    eyeHeight: player.eyeHeight,
+    moving: player.moving,
+    velocityX: player.velocity.x,
+    velocityZ: player.velocity.z
+  },
+  input: {
+    forward: input.forward,
+    backward: input.backward,
+    left: input.left,
+    right: input.right,
+    sprint: input.sprint
+  },
+  mission: {
+    phase: campaign.phase,
+    uplinksDone: campaign.objectivesDone,
+    totalUplinks: activeZone.objectiveCount,
+    bossDefeated:
+      campaign.phase === CAMPAIGN_PHASE.EXTRACTION ||
+      campaign.phase === CAMPAIGN_PHASE.VICTORY
+  },
+  zone: {
+    index: campaign.zoneIndex,
+    id: activeZone.id,
+    name: activeZone.name,
+    completedZoneIds: [...campaign.completedZoneIds]
+  },
+  weapon: {
+    mode: weapon.mode,
+    ammo: weapon.ammo,
+    reserve: weapon.reserve,
+    reloadRemaining: weapon.reloadRemaining
+  },
+  terminals: terminals.map((terminal) => ({
+    id: terminal.id,
+    x: terminal.position.x,
+    z: terminal.position.z,
+    activated: terminal.activated
+  })),
+  enemies: {
+    alive: enemies.filter((enemy) => !enemy.dead).length,
+    canAim: enemies.filter((enemy) => !enemy.dead).map((enemy) => ({
+      x: enemy.group.position.x,
+      y: enemy.group.position.y + 1.06,
+      z: enemy.group.position.z
+    }))
+  },
+  boss: boss
+    ? {
+        active: boss.active,
+        dying: boss.dying,
+        health: boss.health,
+        maxHealth: boss.maxHealth,
+        x: boss.group.position.x,
+        y: boss.group.position.y + 2.25,
+        z: boss.group.position.z
+      }
+    : null,
+  interactionProgress: app.interactionProgress
+});
+
+window.__danrenZoneDebug = () => ({
+  zoneIndex: campaign.zoneIndex,
+  zoneId: activeZone.id,
+  zoneName: activeZone.name,
+  phase: campaign.phase,
+  objectivesDone: campaign.objectivesDone,
+  objectiveCount: activeZone.objectiveCount,
+  completedZoneIds: [...campaign.completedZoneIds],
+  finalVictory: campaign.finalVictory,
+  mechanics: zoneMechanics.map((mechanic) => ({
+    id: mechanic.id,
+    type: mechanic.type,
+    element: mechanic.element || null
+  })),
+  objectCounts: {
+    enemies: enemies.length,
+    projectiles: projectiles.length,
+    objectives: terminals.length,
+    zoneObjects: worldRoot?.children.length || 0
+  }
+});
+
+if (new URLSearchParams(window.location.search).has("zone-test")) {
+  window.__danrenZoneTest = {
+    activateNextObjective() {
+      const objective = terminals.find((candidate) => !candidate.activated);
+      if (objective) activateObjective(objective, "test");
+    },
+    defeatBoss() {
+      if (!boss || campaign.phase !== CAMPAIGN_PHASE.BOSS) return;
+      if (!boss.active) activateBoss();
+      damageBoss(boss.maxHealth + 1, false, false);
+      completeZoneBoss();
+    },
+    completeExtraction() {
+      completeZoneAndAdvance();
+    },
+    snapshot() {
+      return window.__danrenZoneDebug();
+    }
+  };
+}
 
 window.__danrenWeaponDebug = {
   snapshot() {
@@ -816,7 +942,7 @@ function createSky() {
   });
   const sky = new THREE.Mesh(geometry, material);
   sky.name = "ProceduralSky";
-  scene.add(sky);
+  worldRoot.add(sky);
   return material;
 }
 
@@ -1095,21 +1221,13 @@ function createTower(x, z, height, accent = COLORS.teal) {
 }
 
 function buildEnvironment() {
-  worldRoot = new THREE.Group();
   dynamicRoot = new THREE.Group();
-  scene.add(worldRoot, dynamicRoot);
+  dynamicRoot.name = "DynamicEntities";
+  scene.add(dynamicRoot);
+  buildSharedLighting();
+}
 
-  scene.userData.skyMaterial = createSky();
-
-  const groundMaterial = createGroundMaterial();
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150, 1, 1), groundMaterial);
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = 0;
-  ground.receiveShadow = true;
-  ground.name = "ProceduralWetGround";
-  worldRoot.add(ground);
-  worldRoot.userData.groundMaterial = groundMaterial;
-
+function buildSharedLighting() {
   hemisphereLight = new THREE.HemisphereLight(0x6c9896, 0x070606, 1.45);
   scene.add(hemisphereLight);
 
@@ -1125,13 +1243,26 @@ function buildEnvironment() {
   directionLight.shadow.camera.far = 120;
   directionLight.shadow.bias = -0.00035;
   scene.add(directionLight);
+}
+
+function buildHarborZone() {
+  worldRoot.userData.skyMaterial = createSky();
+
+  const groundMaterial = createGroundMaterial();
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150, 1, 1), groundMaterial);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0;
+  ground.receiveShadow = true;
+  ground.name = "ProceduralWetGround";
+  worldRoot.add(ground);
+  worldRoot.userData.groundMaterial = groundMaterial;
 
   const amberLight = new THREE.PointLight(COLORS.amber, 42, 34, 2);
   amberLight.position.set(-8, 8, 31);
-  scene.add(amberLight);
+  worldRoot.add(amberLight);
   const tealLight = new THREE.PointLight(COLORS.teal, 38, 38, 2);
   tealLight.position.set(18, 6, -14);
-  scene.add(tealLight);
+  worldRoot.add(tealLight);
 
   addObstacle(-42, 36, 13, 3.8, 9, 0x192326, COLORS.amber);
   addObstacle(38, 39, 11, 5.2, 12, 0x152124, COLORS.teal);
@@ -1174,6 +1305,47 @@ function buildEnvironment() {
   buildRainSplash();
   buildDust();
   buildTitleSilhouettes();
+}
+
+function buildFloatingIslandZone(zone) {
+  buildZonePlaceholder(zone);
+}
+
+function buildWorldTreeZone(zone) {
+  buildZonePlaceholder(zone);
+}
+
+function buildZonePlaceholder(zone) {
+  const accent = zone.id === "world-tree-core" ? 0xd9d27b : 0x72e6cf;
+  const skyMaterial = createSky();
+  worldRoot.userData.skyMaterial = skyMaterial;
+  skyMaterial.uniforms.uTop.value.setHex(
+    zone.id === "world-tree-core" ? 0x120d08 : 0x07151d
+  );
+  skyMaterial.uniforms.uHorizon.value.setHex(
+    zone.id === "world-tree-core" ? 0x3e2a1c : 0x245d62
+  );
+  skyMaterial.uniforms.uAccent.value.setHex(accent);
+
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      zone.bounds.maxX - zone.bounds.minX,
+      0.5,
+      zone.bounds.maxZ - zone.bounds.minZ
+    ),
+    createMetalMaterial(0x27353a, accent, {
+      metalness: 0.1,
+      roughness: 0.78
+    })
+  );
+  floor.position.set(
+    (zone.bounds.minX + zone.bounds.maxX) / 2,
+    -0.25,
+    (zone.bounds.minZ + zone.bounds.maxZ) / 2
+  );
+  floor.receiveShadow = true;
+  worldRoot.add(floor);
+  buildDust();
 }
 
 function buildRunwayDetails() {
@@ -1241,7 +1413,7 @@ function buildRain() {
   });
   rain = new THREE.LineSegments(geometry, material);
   rain.frustumCulled = false;
-  scene.add(rain);
+  worldRoot.add(rain);
 }
 
 function buildRainSplash() {
@@ -1317,7 +1489,7 @@ function buildRainSplash() {
   rainSplash.frustumCulled = false;
   rainSplash.renderOrder = 2;
   rainSplash.userData.fullCount = count;
-  scene.add(rainSplash);
+  worldRoot.add(rainSplash);
 }
 
 function buildDust() {
@@ -1342,7 +1514,7 @@ function buildDust() {
   });
   dust = new THREE.Points(geometry, material);
   dust.frustumCulled = false;
-  scene.add(dust);
+  worldRoot.add(dust);
 }
 
 function buildTitleSilhouettes() {
@@ -1866,8 +2038,11 @@ function updatePlayer(dt) {
     player.facing = lerpAngle(player.facing, app.cameraYaw, 1 - Math.exp(-16 * dt));
   }
 
-  if (app.elapsed - app.lastDamageAt > 5) {
-    player.health = Math.min(player.maxHealth, player.health + dt * 3.2);
+  if (app.elapsed - app.lastDamageAt > TRAINING_PROFILE.healthRegenDelay) {
+    player.health = Math.min(
+      player.maxHealth,
+      player.health + dt * TRAINING_PROFILE.healthRegenPerSecond
+    );
   }
   player.invulnerable = Math.max(0, player.invulnerable - dt);
 
@@ -2105,6 +2280,10 @@ function updatePlayerAttack(dt) {
 
 function triggerPrimaryPress() {
   if (!app.running) return;
+  if (weapon.mode === WEAPON_MODE.GUN) {
+    tryFireGun();
+    return;
+  }
   if (weapon.mode === WEAPON_MODE.BLADE) startBladeAttack();
   if (weapon.mode === WEAPON_MODE.MAGIC && !magic.charging) {
     const started = beginMagicCast(magic);
@@ -2146,7 +2325,7 @@ function startBladeAttack() {
   player.attack = {
     variant,
     time: 0,
-    duration: variant === 2 ? 0.43 : 0.34,
+    duration: TRAINING_PROFILE.blade.duration[variant],
     hit: false
   };
   player.hitSet.clear();
@@ -2157,8 +2336,8 @@ function startBladeAttack() {
 
 function resolveBladeHit(variant) {
   const forward = new THREE.Vector3(-Math.sin(player.facing), 0, -Math.cos(player.facing));
-  const reach = variant === 2 ? 4.1 : 3.35;
-  const damage = [38, 43, 62][variant];
+  const reach = TRAINING_PROFILE.blade.reach[variant];
+  const damage = TRAINING_PROFILE.blade.damage[variant];
   for (const enemy of enemies) {
     if (enemy.dead) continue;
     const dx = enemy.group.position.x - player.position.x;
@@ -2262,7 +2441,7 @@ function tryFireGun() {
   }
 
   weapon.ammo -= 1;
-  weapon.fireCooldown = 0.105;
+  weapon.fireCooldown = TRAINING_PROFILE.gun.fireCooldown;
   app.lastShotAt = app.elapsed;
   const feedback = fireCombatFeedback(combatFeedback, {
     aiming: input.aim,
@@ -2273,6 +2452,45 @@ function tryFireGun() {
   });
 
   const direction = camera.getWorldDirection(new THREE.Vector3());
+  const aimAssistCandidates = [];
+  for (const enemy of enemies) {
+    if (enemy.dead) continue;
+    aimAssistCandidates.push({
+      kind: "enemy",
+      enemy,
+      x: enemy.group.position.x,
+      y: enemy.group.position.y + 1.06,
+      z: enemy.group.position.z
+    });
+  }
+  if (boss?.active && !boss.dying) {
+    aimAssistCandidates.push({
+      kind: "boss",
+      boss,
+      x: boss.group.position.x,
+      y: boss.group.position.y + 2.25,
+      z: boss.group.position.z
+    });
+  }
+  const aimAssist = pickAimAssistTarget(
+    camera.position,
+    direction,
+    aimAssistCandidates,
+    {
+      maxAngle: input.aim
+        ? TRAINING_PROFILE.gun.aimAssistAdsAngle
+        : TRAINING_PROFILE.gun.aimAssistHipAngle,
+      maxDistance: TRAINING_PROFILE.gun.aimAssistRange
+    }
+  );
+  if (aimAssist) {
+    const assistedDirection = new THREE.Vector3(
+      aimAssist.x - camera.position.x,
+      aimAssist.y - camera.position.y,
+      aimAssist.z - camera.position.z
+    ).normalize();
+    direction.lerp(assistedDirection, input.aim ? 0.82 : 0.62).normalize();
+  }
   direction.x += randomRange(-feedback.spread, feedback.spread);
   direction.y += randomRange(-feedback.spread, feedback.spread);
   direction.z += randomRange(-feedback.spread, feedback.spread);
@@ -2286,9 +2504,22 @@ function tryFireGun() {
   alertEnemies(player.position.x, player.position.z, 23);
 
   if (hit.enemy) {
-    hitEnemy(hit.enemy, hit.headshot ? 34 : 18, hit.headshot, false);
+    hitEnemy(
+      hit.enemy,
+      hit.headshot
+        ? TRAINING_PROFILE.gun.headshotDamage
+        : TRAINING_PROFILE.gun.damage,
+      hit.headshot,
+      false
+    );
   } else if (hit.boss) {
-    damageBoss(18, false, hit.headshot);
+    damageBoss(
+      hit.headshot
+        ? TRAINING_PROFILE.gun.bossHeadshotDamage
+        : TRAINING_PROFILE.gun.bossDamage,
+      false,
+      hit.headshot
+    );
   } else if (hit.point) {
     spawnImpact(hit.point, 0xb8c9c3, 5);
   }
@@ -2441,6 +2672,7 @@ function detonateMagicProjectile(projectile, position, directTargetId = null) {
   const radius = projectile.splashRadius || profile.radius;
   const center = position.clone();
   magicTelemetry.impacts += 1;
+  tryActivateObjectiveWithMagic(projectile, center, radius);
 
   spawnMagicImpactEffect(center, projectile.element, profile, radius, projectile.power || 0);
   audio?.magicImpact(projectile.element, center, projectile.power || 0);
@@ -2634,22 +2866,27 @@ function findShotHit(ray) {
   return result;
 }
 
-function createTerminals() {
+const OBJECTIVE_STYLE = {
+  "ggo-harbor": { color: COLORS.amber, label: "上行链路" },
+  "alo-sky": { color: 0x72e6cf, label: "风元素符文" },
+  "world-tree-core": { color: 0xd9d27b, label: "核心封印" }
+};
+
+function createZoneObjectives(zone) {
   for (const terminal of terminals) dynamicRoot.remove(terminal.group);
   terminals.length = 0;
-  const definitions = [
-    { id: "A", x: -33, z: 16 },
-    { id: "B", x: 22, z: 2 },
-    { id: "C", x: -12, z: -21 }
-  ];
-  for (let index = 0; index < definitions.length; index += 1) {
-    const definition = definitions[index];
+  const style = OBJECTIVE_STYLE[zone.id] || {
+    color: COLORS.teal,
+    label: zone.objectiveLabel
+  };
+  for (let index = 0; index < zone.objectivePoints.length; index += 1) {
+    const definition = zone.objectivePoints[index];
     const group = new THREE.Group();
     group.position.set(definition.x, 0, definition.z);
 
     const base = new THREE.Mesh(
       new THREE.CylinderGeometry(1.75, 2.0, 0.32, 8),
-      createMetalMaterial(0x152124, COLORS.amber, { roughness: 0.42 })
+      createMetalMaterial(0x152124, style.color, { roughness: 0.42 })
     );
     base.position.y = 0.16;
     base.castShadow = true;
@@ -2658,14 +2895,14 @@ function createTerminals() {
 
     const lowerRing = new THREE.Mesh(
       new THREE.TorusGeometry(1.55, 0.05, 6, 48),
-      createEmissiveMaterial(COLORS.amber, 3.5)
+      createEmissiveMaterial(style.color, 3.5)
     );
     lowerRing.rotation.x = Math.PI / 2;
     lowerRing.position.y = 0.34;
     group.add(lowerRing);
 
     const hologramMaterial = new THREE.MeshBasicMaterial({
-      color: COLORS.amber,
+      color: style.color,
       transparent: true,
       opacity: 0.22,
       blending: THREE.AdditiveBlending,
@@ -2678,14 +2915,14 @@ function createTerminals() {
 
     const core = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.34, 0),
-      createEmissiveMaterial(COLORS.amber, 5)
+      createEmissiveMaterial(style.color, 5)
     );
     core.position.y = 2.2;
     group.add(core);
 
     const ringA = new THREE.Mesh(
       new THREE.TorusGeometry(0.92, 0.022, 5, 42),
-      createEmissiveMaterial(COLORS.amber, 3)
+      createEmissiveMaterial(style.color, 3)
     );
     ringA.position.y = 1.2;
     ringA.rotation.x = Math.PI / 2;
@@ -2696,7 +2933,7 @@ function createTerminals() {
     group.add(ringB);
 
     const beamMaterial = new THREE.MeshBasicMaterial({
-      color: COLORS.amber,
+      color: style.color,
       transparent: true,
       opacity: 0.065,
       blending: THREE.AdditiveBlending,
@@ -2707,7 +2944,7 @@ function createTerminals() {
     beam.position.y = 8.35;
     group.add(beam);
 
-    const light = new THREE.PointLight(COLORS.amber, 16, 15, 2);
+    const light = new THREE.PointLight(style.color, 16, 15, 2);
     light.position.y = 2.2;
     group.add(light);
 
@@ -2715,6 +2952,8 @@ function createTerminals() {
     terminals.push({
       id: definition.id,
       index,
+      label: style.label,
+      color: style.color,
       group,
       position: new THREE.Vector3(definition.x, 0, definition.z),
       core,
@@ -2733,9 +2972,9 @@ function createTerminals() {
 
 function createMissionPips() {
   dom.pips.innerHTML = "";
-  for (let index = 0; index < mission.totalUplinks; index += 1) {
+  for (let index = 0; index < activeZone.objectiveCount; index += 1) {
     const pip = document.createElement("i");
-    pip.classList.toggle("done", index < mission.uplinksDone);
+    pip.classList.toggle("done", index < campaign.objectivesDone);
     dom.pips.appendChild(pip);
   }
 }
@@ -2760,7 +2999,11 @@ function updateTerminals(dt, now) {
         player.position.x - terminal.position.x,
         player.position.z - terminal.position.z
       );
-      if (distance < 3.1 && distance < nearestDistance) {
+      if (
+        campaign.phase === CAMPAIGN_PHASE.OBJECTIVES &&
+        distance < 3.1 &&
+        distance < nearestDistance
+      ) {
         nearest = terminal;
         nearestDistance = distance;
       }
@@ -2770,38 +3013,63 @@ function updateTerminals(dt, now) {
   if (nearest && input.interact) {
     app.interactionProgress = Math.min(1, app.interactionProgress + dt / 1.45);
     if (audio) audio.terminalHum(app.interactionProgress);
-    if (app.interactionProgress >= 1) activateTerminal(nearest);
+    if (app.interactionProgress >= 1) activateObjective(nearest, "interact");
   } else {
     app.interactionProgress = Math.max(0, app.interactionProgress - dt * 2.8);
   }
 }
 
-function activateTerminal(terminal) {
-  if (!terminal || terminal.activated) return;
-  terminal.activated = true;
-  terminal.activationFlash = 1.6;
-  terminal.core.material.color.setHex(COLORS.teal);
-  terminal.lowerRing.material.color.setHex(COLORS.teal);
-  terminal.ringA.material.color.setHex(COLORS.teal);
-  terminal.ringB.material.color.setHex(COLORS.teal);
-  terminal.column.material.color.setHex(COLORS.teal);
-  terminal.beam.material.color.setHex(COLORS.teal);
-  terminal.light.color.setHex(COLORS.teal);
-  terminal.beam.material.opacity = 0.025;
-  terminal.group.scale.setScalar(1.12);
+function activateObjective(objective, source = "interact") {
+  if (
+    !objective ||
+    objective.activated ||
+    campaign.phase !== CAMPAIGN_PHASE.OBJECTIVES
+  ) {
+    return;
+  }
+  objective.activated = true;
+  objective.activationFlash = 1.6;
+  objective.core.material.color.setHex(COLORS.teal);
+  objective.lowerRing.material.color.setHex(COLORS.teal);
+  objective.ringA.material.color.setHex(COLORS.teal);
+  objective.ringB.material.color.setHex(COLORS.teal);
+  objective.column.material.color.setHex(COLORS.teal);
+  objective.beam.material.color.setHex(COLORS.teal);
+  objective.light.color.setHex(COLORS.teal);
+  objective.beam.material.opacity = 0.025;
+  objective.group.scale.setScalar(1.12);
   app.interactionProgress = 0;
   app.cameraShake = 0.16;
-  advanceMission(mission, "uplink");
+  const repaired = Math.min(
+    TRAINING_PROFILE.terminalRepair,
+    player.maxHealth - player.health
+  );
+  player.health = Math.min(player.maxHealth, player.health + TRAINING_PROFILE.terminalRepair);
+  app.lastDamageAt = -Infinity;
+  advanceCampaign(campaign, "objective");
   createMissionPips();
   audio?.terminalComplete();
-  spawnBurst(terminal.position.clone().add(new THREE.Vector3(0, 2.1, 0)), COLORS.teal, 30, 5.5);
-  showToast(`上行链路 ${terminal.id} 已接入 // ${mission.uplinksDone}/${mission.totalUplinks}`, 2200);
-  spawnTerminalWave(terminal.index);
+  spawnBurst(
+    objective.position.clone().add(new THREE.Vector3(0, 2.1, 0)),
+    COLORS.teal,
+    30,
+    5.5
+  );
+  const repairCopy = repaired > 0 ? ` // 生命恢复 +${Math.round(repaired)}` : "";
+  const resonanceCopy = source === "wind" ? " // 风元素共鸣" : "";
+  showToast(
+    `${objective.label} ${objective.id} 已激活 // ${campaign.objectivesDone}/${activeZone.objectiveCount}${repairCopy}${resonanceCopy}`,
+    2600
+  );
+  if (activeZone.id === "ggo-harbor") spawnTerminalWave(objective.index);
 
-  if (mission.phase === MISSION_PHASE.BOSS) {
+  if (campaign.phase === CAMPAIGN_PHASE.BOSS) {
     app.bossUnlockAt = app.elapsed + 2.2;
     bossUnlockTimer = app.bossUnlockAt;
-    showToast("全部链路断开。警告：大型断界机兵正在解冻。", 3200);
+    showToast(`${activeZone.objectiveLabel}全部激活。区域守门者正在解冻。`, 3200);
+  } else if (campaign.phase === CAMPAIGN_PHASE.EXTRACTION) {
+    createExtractionPoint(activeZone.extraction);
+    showToast("区域目标已完成 // 前往撤离点", 3000);
   }
 }
 
@@ -2827,6 +3095,31 @@ function spawnTerminalWave(terminalIndex) {
     const [x, z] = wavePoints[index];
     createEnemy(index === 2 ? "bulwark" : index === 1 ? "gull" : "hound", x, z, true);
   }
+}
+
+function tryActivateObjectiveWithMagic(projectile, center, radius) {
+  if (projectile.element !== MAGIC_ELEMENT.WIND) return false;
+  if (campaign.phase !== CAMPAIGN_PHASE.OBJECTIVES) return false;
+  const objective = terminals.find((candidate) => {
+    if (candidate.activated) return false;
+    return (
+      Math.hypot(
+        candidate.position.x - center.x,
+        candidate.position.z - center.z
+      ) <= radius + 1.2
+    );
+  });
+  if (!objective) return false;
+  activateObjective(objective, "wind");
+  spawnShockwave(
+    objective.position.clone().setY(0.08),
+    0.5,
+    5.8,
+    0x70f0d1,
+    0.72,
+    false
+  );
+  return true;
 }
 
 const enemyDefinitions = {
@@ -3133,7 +3426,8 @@ function updateEnemies(dt, now) {
           position.z += directionZ * movementSpeed * dt;
         }
         if (distance < enemy.definition.attackRange && enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = enemy.definition.attackDelay;
+          enemy.attackCooldown =
+            enemy.definition.attackDelay * TRAINING_PROFILE.enemy.attackDelayScale;
           enemy.attackTwitch = 0.28;
           damagePlayer(enemy.definition.damage, position);
           audio?.enemyMelee(position);
@@ -3154,7 +3448,8 @@ function updateEnemies(dt, now) {
         position.x += moveX * movementSpeed * dt;
         position.z += moveZ * movementSpeed * dt;
         if (distance < enemy.definition.attackRange && enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = enemy.definition.attackDelay;
+          enemy.attackCooldown =
+            enemy.definition.attackDelay * TRAINING_PROFILE.enemy.attackDelayScale;
           enemy.attackTwitch = 0.2;
           fireEnemyProjectile(enemy);
         }
@@ -3196,7 +3491,10 @@ function fireEnemyProjectile(enemy) {
   target.x += player.velocity.x * 0.08;
   target.z += player.velocity.z * 0.08;
   const direction = target.sub(origin).normalize();
-  const spread = enemy.type === "bulwark" ? 0.035 : 0.018;
+  const spread =
+    enemy.type === "bulwark"
+      ? TRAINING_PROFILE.enemy.spread.bulwark
+      : TRAINING_PROFILE.enemy.spread.gull;
   direction.x += randomRange(-spread, spread);
   direction.y += randomRange(-spread * 0.5, spread * 0.5);
   direction.z += randomRange(-spread, spread);
@@ -3265,6 +3563,8 @@ function killEnemy(enemy, melee = false) {
 }
 
 function spawnProjectile(options) {
+  const speedScale =
+    options.owner === "enemy" ? TRAINING_PROFILE.enemy.projectileSpeedScale : 1;
   const material = new THREE.MeshBasicMaterial({
     color: options.color,
     toneMapped: false
@@ -3286,6 +3586,10 @@ function spawnProjectile(options) {
   dynamicRoot.add(mesh);
   const projectile = {
     ...options,
+    vx: options.vx * speedScale,
+    vy: (options.vy || 0) * speedScale,
+    vz: options.vz * speedScale,
+    speed: options.speed * speedScale,
     mesh,
     life: options.life ?? 4.5,
     reflected: false,
@@ -3436,8 +3740,8 @@ function sweptPointDistance(previous, current, target, radius) {
 
 function damagePlayer(amount, sourcePosition) {
   if (!app.running || player.invulnerable > 0) return;
-  player.health = Math.max(0, player.health - amount);
-  player.invulnerable = 0.18;
+  player.health = Math.max(0, player.health - amount * TRAINING_PROFILE.enemy.damageScale);
+  player.invulnerable = TRAINING_PROFILE.postHitInvulnerability;
   app.lastDamageAt = app.elapsed;
   app.cameraShake = Math.max(app.cameraShake, 0.18);
   app.flash = 0.75;
@@ -3448,22 +3752,32 @@ function damagePlayer(amount, sourcePosition) {
   if (player.health <= 0) finishGame(false);
 }
 
-function createBoss() {
+function createBoss(zone) {
   if (boss?.group) dynamicRoot.remove(boss.group);
+  if (!zone?.boss) {
+    boss = null;
+    return;
+  }
+  const accent =
+    zone.id === "world-tree-core"
+      ? 0xe5cb6a
+      : zone.id === "alo-sky"
+        ? 0x74efd0
+        : COLORS.danger;
   const group = new THREE.Group();
-  group.position.set(0, 0, -42);
+  group.position.set(0, 0, Math.max(zone.bounds.minZ + 7, -42));
   group.visible = false;
 
-  const armor = createMetalMaterial(0x252a2b, COLORS.danger, {
+  const armor = createMetalMaterial(0x252a2b, accent, {
     metalness: 0.86,
     roughness: 0.3
   });
-  const darkArmor = createMetalMaterial(0x101719, COLORS.danger, {
+  const darkArmor = createMetalMaterial(0x101719, accent, {
     metalness: 0.72,
     roughness: 0.42
   });
-  const coreMaterial = new THREE.MeshBasicMaterial({ color: COLORS.danger, toneMapped: false });
-  const bladeMaterial = createEmissiveMaterial(COLORS.danger, 4.8, true, 0.9);
+  const coreMaterial = new THREE.MeshBasicMaterial({ color: accent, toneMapped: false });
+  const bladeMaterial = createEmissiveMaterial(accent, 4.8, true, 0.9);
 
   const pelvis = new THREE.Mesh(new THREE.CylinderGeometry(1.18, 1.35, 0.75, 8), darkArmor);
   pelvis.position.y = 1.4;
@@ -3478,7 +3792,7 @@ function createBoss() {
   const chest = new THREE.Mesh(new THREE.OctahedronGeometry(0.52, 0), coreMaterial);
   chest.position.set(0, 3.05, -0.78);
   group.add(chest);
-  const coreLight = new THREE.PointLight(COLORS.danger, 18, 13, 2);
+  const coreLight = new THREE.PointLight(accent, 18, 13, 2);
   coreLight.position.set(0, 3.05, -1.1);
   group.add(coreLight);
 
@@ -3544,7 +3858,7 @@ function createBoss() {
   const targetBeam = new THREE.Mesh(
     new THREE.CylinderGeometry(0.08, 1.4, 18, 18, 1, true),
     new THREE.MeshBasicMaterial({
-      color: COLORS.danger,
+      color: accent,
       transparent: true,
       opacity: 0.025,
       side: THREE.DoubleSide,
@@ -3564,6 +3878,9 @@ function createBoss() {
   }
   dynamicRoot.add(group);
   boss = {
+    id: zone.boss.id,
+    name: zone.boss.name,
+    accent,
     group,
     armor,
     torso,
@@ -3576,8 +3893,8 @@ function createBoss() {
     rightLeg,
     sword,
     targetBeam,
-    health: 1100,
-    maxHealth: 1100,
+    health: zone.boss.maxHealth,
+    maxHealth: zone.boss.maxHealth,
     phase: 1,
     active: false,
     dying: false,
@@ -3598,9 +3915,14 @@ function activateBoss() {
   boss.activatedAt = app.elapsed;
   boss.attackCooldown = 2.6;
   app.cameraShake = 0.34;
-  spawnBurst(boss.group.position.clone().add(new THREE.Vector3(0, 2.8, 0)), COLORS.danger, 54, 8);
+  spawnBurst(
+    boss.group.position.clone().add(new THREE.Vector3(0, 2.8, 0)),
+    boss.accent,
+    54,
+    8
+  );
   audio?.bossRoar();
-  showToast("NOCTIS // 断界机兵：解除限制", 2600);
+  showToast(`${boss.name}：解除限制`, 2600);
 }
 
 function updateBoss(dt, now) {
@@ -3640,7 +3962,7 @@ function updateBoss(dt, now) {
     if (boss.deathTimer <= 0) {
       boss.group.visible = false;
       boss.active = false;
-      completeMission();
+      completeZoneBoss();
     }
     return;
   }
@@ -3649,10 +3971,12 @@ function updateBoss(dt, now) {
   if (healthRatio <= 0.48 && boss.phase === 1) {
     boss.phase = 2;
     boss.attackCooldown = 1.3;
-    boss.targetBeam.material.color.setHex(COLORS.amber);
+    boss.targetBeam.material.color.setHex(
+      activeZone.id === "ggo-harbor" ? COLORS.amber : boss.accent
+    );
     app.cameraShake = 0.34;
-    spawnShockwave(position.clone(), 1, 15, COLORS.amber, 1.3);
-    showToast("NOCTIS 进入第二阶段 // 近界斩击模块激活", 2600);
+    spawnShockwave(position.clone(), 1, 15, boss.accent, 1.3);
+    showToast(`${boss.name} 进入第二阶段 // 近界斩击模块激活`, 2600);
     audio?.bossPhase();
   }
 
@@ -3685,7 +4009,7 @@ function updateBoss(dt, now) {
       if (pattern === 0) bossRadialAttack();
       else if (pattern === 1) bossBurstAttack(true);
       else if (pattern === 2) {
-        spawnShockwave(position.clone(), 1.2, 14, COLORS.danger, 1.05);
+      spawnShockwave(position.clone(), 1.2, 14, boss.accent, 1.05);
         audio?.bossSlam();
       } else {
         bossBurstAttack(true);
@@ -3779,7 +4103,7 @@ function damageBoss(damage, melee = false, headshot = false) {
     app.cameraShake = 0.5;
     app.kills += 1;
     showHitMarker(true);
-    showToast("NOCTIS 核心崩解 // 区域链路正在关闭", 2800);
+    showToast(`${boss.name} 核心崩解 // 区域链路正在关闭`, 2800);
     audio?.bossDeath();
     for (const projectile of projectiles) {
       if (projectile.owner === "enemy") projectile.life = Math.min(projectile.life, 0.3);
@@ -4988,39 +5312,40 @@ function nearestPendingTerminal() {
 function updateObjectiveGuide() {
   if (!dom.objectiveGuide) return;
 
-  if (mission.phase === MISSION_PHASE.UPLINKS) {
+  if (campaign.phase === CAMPAIGN_PHASE.OBJECTIVES) {
     const { terminal, distance } = nearestPendingTerminal();
     if (!terminal) {
-      dom.objectiveGuide.textContent = "链路扫描完成 // 准备迎战";
+      dom.objectiveGuide.textContent = "区域目标扫描完成 // 准备迎战";
     } else if (distance <= 3.1) {
-      dom.objectiveGuide.textContent = `终端 ${terminal.id} 已锁定 // 长按 E 接入`;
+      dom.objectiveGuide.textContent =
+        `${terminal.label} ${terminal.id} 已锁定 // 长按 E 激活`;
     } else {
       dom.objectiveGuide.textContent =
-        `最近终端 ${terminal.id} // 距离 ${Math.ceil(distance)} m`;
+        `最近${terminal.label} ${terminal.id} // 距离 ${Math.ceil(distance)} m`;
     }
     return;
   }
 
-  if (mission.phase === MISSION_PHASE.BOSS) {
+  if (campaign.phase === CAMPAIGN_PHASE.BOSS) {
     dom.objectiveGuide.textContent = boss?.active
-      ? "NOCTIS 解除限制 // 注意弹幕与近界斩击"
-      : "大型断界机兵正在解冻";
+      ? `${boss.name} 解除限制 // 注意弹幕与近界斩击`
+      : `${activeZone.boss?.name || "区域守门者"}正在解冻`;
     return;
   }
 
-  if (mission.phase === MISSION_PHASE.EXTRACTION) {
+  if (campaign.phase === CAMPAIGN_PHASE.EXTRACTION) {
     const distance = Math.hypot(
-      player.position.x - 0,
-      player.position.z - 47
+      player.position.x - activeZone.extraction.x,
+      player.position.z - activeZone.extraction.z
     );
     dom.objectiveGuide.textContent =
       distance <= 3
         ? "撤离信标已锁定 // 进入信标完成撤离"
-        : `返回起点撤离 // 距离 ${Math.ceil(distance)} m`;
+        : `前往 ${activeZone.shortName} 撤离点 // 距离 ${Math.ceil(distance)} m`;
     return;
   }
 
-  dom.objectiveGuide.textContent = "撤离成功 // 任务完成";
+  dom.objectiveGuide.textContent = "全域撤离完成 // 三区战役结束";
 }
 
 function updateUi(dt) {
@@ -5074,29 +5399,34 @@ function updateUi(dt) {
   if (dom.touchFire) dom.touchFire.textContent = magicMode ? "蓄力" : "攻击";
   if (dom.touchCrouch) dom.touchCrouch.classList.toggle("active", input.crouch);
 
-  if (mission.phase === MISSION_PHASE.UPLINKS) {
-    dom.objective.textContent = `接入战术上行链路 ${mission.uplinksDone}/${mission.totalUplinks}`;
-  } else if (mission.phase === MISSION_PHASE.BOSS) {
-    dom.objective.textContent = "击破断界机兵 NOCTIS";
-  } else if (mission.phase === MISSION_PHASE.EXTRACTION) {
-    dom.objective.textContent = "返回起点撤离";
+  if (campaign.phase === CAMPAIGN_PHASE.OBJECTIVES) {
+    dom.objective.textContent =
+      `${activeZone.objectiveLabel} ${campaign.objectivesDone}/${activeZone.objectiveCount}`;
+  } else if (campaign.phase === CAMPAIGN_PHASE.BOSS) {
+    dom.objective.textContent = `击破 ${activeZone.boss?.name || "区域守门者"}`;
+  } else if (campaign.phase === CAMPAIGN_PHASE.EXTRACTION) {
+    dom.objective.textContent = `前往 ${activeZone.shortName} 撤离点`;
   } else {
-    dom.objective.textContent = "撤离成功";
+    dom.objective.textContent = "全域任务完成";
   }
   updateObjectiveGuide();
 
   const showInteraction =
     Boolean(app.interactionTarget) &&
     !app.interactionTarget.activated &&
-    mission.phase === MISSION_PHASE.UPLINKS &&
+    campaign.phase === CAMPAIGN_PHASE.OBJECTIVES &&
     app.running;
   dom.interaction.classList.toggle("hidden", !showInteraction);
   if (showInteraction) {
-    dom.interactionLabel.textContent = `接入上行链路 ${app.interactionTarget.id} // 按住 E`;
+    dom.interactionLabel.textContent =
+      `激活${app.interactionTarget.label} ${app.interactionTarget.id} // 按住 E`;
     dom.interactionBar.style.width = `${app.interactionProgress * 100}%`;
   }
 
-  const bossVisible = Boolean(boss?.active && mission.phase === MISSION_PHASE.BOSS);
+  const bossVisible = Boolean(
+    boss?.active &&
+    campaign.phase === CAMPAIGN_PHASE.BOSS
+  );
   dom.bossHud.classList.toggle("hidden", !bossVisible);
   if (bossVisible) {
     dom.bossBar.style.width = `${(boss.health / boss.maxHealth) * 100}%`;
@@ -5176,22 +5506,22 @@ function finishGame(victory) {
   dom.pause.classList.add("hidden");
   dom.end.classList.remove("hidden");
   dom.end.time = formatTime(app.elapsed);
-  dom.endKicker.textContent = victory ? "撤离完成" : "连接中断";
-  dom.endTitle.textContent = victory ? "撤离成功" : "意识连接终止";
+  dom.endKicker.textContent = victory ? "全域撤离完成" : "连接中断";
+  dom.endTitle.textContent = victory ? "世界树核心已静默" : "意识连接终止";
   dom.endCopy.textContent = victory
-    ? "NOCTIS 已崩解，三组战术链路全部关闭。你已返回起点，完成撤离。"
-    : "生命维持系统归零。重新部署并调整近战与枪械的切换节奏。";
+    ? "GGO 港湾、ALO 风之浮岛与世界树根的核心链路已全部切断。三区战役完成。"
+    : "生命维持系统归零。利用掩体保持中距离，必要时用风元素激活区域目标，并在安全时完成长按交互。";
   dom.endTime.textContent = formatTime(app.elapsed);
   dom.endKills.textContent = String(app.kills);
   dom.endParries.textContent = String(app.parries);
   if (victory) audio?.victory();
 }
 
-function createExtractionPoint() {
+function createExtractionPoint(position = activeZone.extraction) {
   if (extractionPoint?.group) dynamicRoot.remove(extractionPoint.group);
 
   const group = new THREE.Group();
-  group.position.set(0, 0, 47);
+  group.position.set(position.x, position.y || 0, position.z);
 
   const ringMaterial = new THREE.MeshBasicMaterial({
     color: COLORS.teal,
@@ -5239,13 +5569,13 @@ function createExtractionPoint() {
     innerRing,
     beam,
     light,
-    position: new THREE.Vector3(0, 0, 47),
+    position: new THREE.Vector3(position.x, position.y || 0, position.z),
     activatedAt: app.elapsed
   };
 }
 
 function updateExtractionPoint(dt, now) {
-  if (!extractionPoint || mission.phase !== MISSION_PHASE.EXTRACTION) return;
+  if (!extractionPoint || campaign.phase !== CAMPAIGN_PHASE.EXTRACTION) return;
   const pulse = 1 + Math.sin(now * 0.006) * 0.08;
   extractionPoint.outerRing.scale.setScalar(pulse);
   extractionPoint.innerRing.rotation.z += dt * 0.8;
@@ -5257,39 +5587,133 @@ function updateExtractionPoint(dt, now) {
     player.position.z - extractionPoint.position.z
   );
   if (distance <= 2.8) {
-    advanceMission(mission, "extraction");
-    showToast("撤离信标确认 // 任务完成", 1800);
-    window.setTimeout(() => finishGame(true), 420);
+    completeZoneAndAdvance();
   }
 }
 
-function completeMission() {
-  if (mission.phase !== MISSION_PHASE.BOSS) return;
-  advanceMission(mission, "boss");
+function completeZoneBoss() {
+  if (campaign.phase !== CAMPAIGN_PHASE.BOSS) return;
+  advanceCampaign(campaign, "boss");
   app.bossUnlockAt = Infinity;
-  createExtractionPoint();
-  showToast("NOCTIS 已击破 // 返回起点撤离信标", 3800);
+  createExtractionPoint(activeZone.extraction);
+  showToast(`${activeZone.boss.name} 已击破 // 前往区域撤离点`, 3600);
 }
 
-function clearDynamicRoot() {
-  dynamicRoot.traverse((child) => {
-    if (!child.isMesh && !child.isPoints && !child.isLine) return;
-    child.geometry?.dispose();
-    if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
-    else child.material?.dispose();
-  });
-  dynamicRoot.clear();
+function completeZoneAndAdvance() {
+  if (campaign.phase !== CAMPAIGN_PHASE.EXTRACTION) return;
+  const completedName = activeZone.shortName;
+  advanceCampaign(campaign, "extraction");
+  if (campaign.finalVictory) {
+    showToast("全域撤离完成 // 三区战役结束", 1600);
+    window.setTimeout(() => finishGame(true), 500);
+    return;
+  }
+  zoneTransitionTimer = 1.1;
+  showToast(`${completedName} 完成 // 正在重构下一战区`, 1200);
+  window.setTimeout(() => {
+    loadZone(campaign.zoneIndex);
+    showToast(
+      `${activeZone.name} // ${activeZone.objectiveLabel} 0/${activeZone.objectiveCount}`,
+      2800
+    );
+  }, 900);
+}
+
+function clearDynamicEntities() {
+  clearMagicChargeEffect();
+  while (dynamicRoot.children.length > 0) {
+    const child = dynamicRoot.children.pop();
+    disposeObject3D(child);
+  }
   enemies.length = 0;
   terminals.length = 0;
   projectiles.length = 0;
   transientEffects.length = 0;
   extractionPoint = null;
+  boss = null;
+  app.interactionTarget = null;
+  app.interactionProgress = 0;
+}
+
+function disposeZone() {
+  clearDynamicEntities();
+  if (worldRoot) {
+    scene.remove(worldRoot);
+    disposeObject3D(worldRoot);
+    worldRoot = null;
+  }
+  obstacleColliders.length = 0;
+  obstacleBoxes.length = 0;
+  cameraObstacles.length = 0;
+  zoneMechanics = [];
+  rain = null;
+  rainData = [];
+  rainSplash = null;
+  dust = null;
+  app.bossUnlockAt = Infinity;
+  app.lightningIn = 9;
+  app.lightning = 0;
+}
+
+function updateZoneMechanisms() {}
+
+function updateZoneHud() {
+  updateUi(0);
+}
+
+function loadZone(zoneIndex) {
+  const zone = ZONES[zoneIndex];
+  if (!zone) throw new RangeError(`Unknown zone index ${zoneIndex}`);
+  disposeZone();
+  campaign.zoneIndex = zoneIndex;
+  activeZone = zone;
+  WORLD_LIMIT = { ...zone.bounds };
+  worldRoot = new THREE.Group();
+  worldRoot.name = `ZoneRoot:${zone.id}`;
+  scene.add(worldRoot);
+  zoneMechanics = zone.mechanics.map((mechanic) => ({ ...mechanic }));
+
+  player.position.set(zone.spawn.x, zone.spawn.y, zone.spawn.z);
+  player.velocity.set(0, 0, 0);
+  player.verticalVelocity = 0;
+  player.grounded = true;
+  player.attack = null;
+  player.attackQueued = false;
+  player.hitSet.clear();
+  player.invulnerable = Math.max(player.invulnerable, 1.2);
+  player.moving = 0;
+  app.cameraYaw = 0;
+  app.cameraPitch = -0.12;
+  app.interactionTarget = null;
+  app.interactionProgress = 0;
+  if (player.rig) {
+    player.rig.root.position.copy(player.position);
+    player.rig.root.rotation.set(0, player.facing, 0);
+  }
+
+  const builders = {
+    harbor: buildHarborZone,
+    "floating-island": buildFloatingIslandZone,
+    "world-tree-root": buildWorldTreeZone
+  };
+  const builder = builders[zone.environment];
+  if (!builder) throw new RangeError(`Unknown environment ${zone.environment}`);
+  builder(zone);
+  createZoneObjectives(zone);
+  for (const spawn of zone.enemySpawns) {
+    createEnemy(spawn.type, spawn.x, spawn.z, false);
+  }
+  createBoss(zone);
+  createMissionPips();
+  updateZoneHud();
 }
 
 function resetGame() {
   clearMagicChargeEffect();
-  clearDynamicRoot();
-  Object.assign(mission, createMissionState(3));
+  campaign = createCampaignState(ZONES);
+  activeZone = ZONES[0];
+  zoneMechanics = [];
+  zoneTransitionTimer = 0;
   Object.assign(weapon, createWeaponState());
   Object.assign(magic, createMagicState());
   magicTelemetry.casts = 0;
@@ -5306,7 +5730,7 @@ function resetGame() {
   player.grounded = true;
   player.health = player.maxHealth;
   player.stamina = player.maxStamina;
-  player.invulnerable = 0;
+  player.invulnerable = TRAINING_PROFILE.spawnShieldSeconds;
   player.attack = null;
   player.attackQueued = false;
   player.hitSet.clear();
@@ -5339,9 +5763,7 @@ function resetGame() {
   boss = null;
   extractionPoint = null;
   bossUnlockTimer = 0;
-  createTerminals();
-  createBoss();
-  spawnInitialEnemies();
+  loadZone(0);
   updateWeaponVisuals();
   clearTransientInput();
   dom.bossHud.classList.add("hidden");
@@ -5373,6 +5795,7 @@ function updateGame(dt, now) {
   updateBoss(dt, now);
   updateProjectiles(dt);
   updateExtractionPoint(dt, now);
+  updateZoneMechanisms(dt, now);
   updateTransientEffects(dt);
   updateCombatFeedback(combatFeedback, dt);
   updateMagicChargeEffect(dt, now);
@@ -5389,7 +5812,7 @@ function updateEnvironment(dt, now) {
   const groundMaterial = worldRoot?.userData.groundMaterial;
   if (groundMaterial) groundMaterial.uniforms.uTime.value = elapsed;
   if (rainSplash) rainSplash.material.uniforms.uTime.value = elapsed;
-  const skyMaterial = scene?.userData.skyMaterial;
+  const skyMaterial = worldRoot?.userData.skyMaterial;
   if (skyMaterial) skyMaterial.uniforms.uTime.value = elapsed;
 
   if (rain) {
