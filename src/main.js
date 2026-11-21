@@ -6311,6 +6311,17 @@ function updateZoneHud() {
   updateUi(0);
 }
 
+function resupplyOnZoneEntry(zoneIndex) {
+  if (zoneIndex <= 0) return;
+  weapon.ammo = weapon.magSize;
+  weapon.reserve = weapon.reserveMax;
+  weapon.reloadRemaining = 0;
+  magic.mana = magic.maxMana;
+  magic.charging = false;
+  magic.charge = 0;
+  magic.cooldown = 0;
+}
+
 function loadZone(zoneIndex) {
   const zone = ZONES[zoneIndex];
   if (!zone) throw new RangeError(`Unknown zone index ${zoneIndex}`);
@@ -6336,6 +6347,7 @@ function loadZone(zoneIndex) {
   app.cameraPitch = -0.12;
   app.interactionTarget = null;
   app.interactionProgress = 0;
+  resupplyOnZoneEntry(zoneIndex);
   if (player.rig) {
     player.rig.root.position.copy(player.position);
     player.rig.root.rotation.set(0, player.facing, 0);

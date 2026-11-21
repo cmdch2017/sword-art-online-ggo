@@ -129,6 +129,22 @@ try {
     null,
     { timeout: 30000 }
   );
+  const desktopZoneHud = await desktop.evaluate(() => ({
+    zoneLabel: document.querySelector("#zone-label")?.textContent || "",
+    objective: document.querySelector("#objective-text")?.textContent || "",
+    pips: document.querySelectorAll("#uplink-pips i").length
+  }));
+  check(
+    desktopZoneHud.zoneLabel.includes("01") &&
+      desktopZoneHud.zoneLabel.includes("GGO"),
+    "desktop zone label is missing",
+    JSON.stringify(desktopZoneHud)
+  );
+  check(
+    desktopZoneHud.pips === 3,
+    "desktop objective pips do not match harbor",
+    JSON.stringify(desktopZoneHud)
+  );
   await desktop.keyboard.press("Digit3");
   await desktop.waitForFunction(
     () => window.__danrenInputDebug?.().weaponMode === "magic",
@@ -248,17 +264,51 @@ try {
     { timeout: 30000 }
   );
 
-  const mobileInitial = await mobile.evaluate(() => ({
-    touchVisible: !document.querySelector("#touch-controls")?.classList.contains("hidden"),
-    magicButton: Boolean(document.querySelector("#touch-magic")),
-    elementButton: Boolean(document.querySelector("#touch-element")),
-    crouchButton: Boolean(document.querySelector("#touch-crouch")),
-    modelState: window.__danrenModelStatus || null
-  }));
+  const mobileInitial = await mobile.evaluate(() => {
+    const zone = document.querySelector("#zone-label")?.getBoundingClientRect();
+    const objective = document
+      .querySelector("#objective-text")
+      ?.getBoundingClientRect();
+    const touchControls = [
+      document.querySelector(".touch-actions")?.getBoundingClientRect(),
+      document.querySelector(".move-stick")?.getBoundingClientRect()
+    ].filter(Boolean);
+    const touchTop = Math.min(...touchControls.map((control) => control.top));
+    return {
+      touchVisible: !document.querySelector("#touch-controls")?.classList.contains("hidden"),
+      magicButton: Boolean(document.querySelector("#touch-magic")),
+      elementButton: Boolean(document.querySelector("#touch-element")),
+      crouchButton: Boolean(document.querySelector("#touch-crouch")),
+      zoneText: document.querySelector("#zone-label")?.textContent || "",
+      objectiveText: document.querySelector("#objective-text")?.textContent || "",
+      zoneObjectiveOverlap:
+        Boolean(zone && objective) &&
+        !(
+          zone.right <= objective.left ||
+          zone.left >= objective.right ||
+          zone.bottom <= objective.top ||
+          zone.top >= objective.bottom
+        ),
+      objectiveAboveTouch:
+        Boolean(objective) && touchControls.length > 0 && objective.bottom < touchTop,
+      modelState: window.__danrenModelStatus || null
+    };
+  });
   check(mobileInitial.touchVisible, "mobile touch controls are hidden");
   check(mobileInitial.magicButton, "mobile magic button is missing");
   check(mobileInitial.elementButton, "mobile element button is missing");
   check(mobileInitial.crouchButton, "mobile crouch button is missing");
+  check(mobileInitial.zoneText.includes("GGO"), "mobile zone label is missing");
+  check(
+    !mobileInitial.zoneObjectiveOverlap,
+    "mobile zone label overlaps objective",
+    JSON.stringify(mobileInitial)
+  );
+  check(
+    mobileInitial.objectiveAboveTouch,
+    "mobile objective overlaps touch controls",
+    JSON.stringify(mobileInitial)
+  );
   check(
     mobileInitial.modelState?.state === "procedural",
     "mobile build did not select the procedural character",
