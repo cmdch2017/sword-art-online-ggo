@@ -65,12 +65,84 @@ try {
     { timeout: 15000 }
   );
 
-  const alo = await page.evaluate(() => window.__danrenZoneDebug());
+  const alo = await page.evaluate(() => ({
+    ...window.__danrenZoneDebug(),
+    hudText: document.querySelector("#hud")?.innerText || ""
+  }));
   check(alo.zoneIndex === 1, "zone index did not advance to ALO");
   check(alo.phase === "objectives", "ALO did not reset to objectives");
   check(alo.objectCounts.objectives === 3, "ALO objective count is wrong");
   check(alo.objectCounts.projectiles === 0, "old projectiles survived zone transition");
   check(alo.completedZoneIds[0] === "ggo-harbor", "harbor was not recorded complete");
+  check(
+    alo.mechanics.some((mechanic) => mechanic.type === "updraft"),
+    "ALO updraft mechanic is missing"
+  );
+  check(
+    alo.mechanics.some((mechanic) => mechanic.element === "wind"),
+    "ALO wind objective mechanic is missing"
+  );
+  check(alo.hudText.includes("ALO 风之浮岛"), "ALO zone HUD title is missing");
+  check(alo.objectCounts.enemies >= 4, "ALO guardians are missing");
+  check(
+    alo.enemyTypes?.some(
+      (type) => type === "sylph" || type === "floating-eye"
+    ),
+    "ALO enemy roster is missing wind factions"
+  );
+
+  await page.evaluate(() => {
+    window.__danrenZoneTest.placeAtUpdraft("updraft-north");
+    window.__danrenZoneTest.alertAllEnemies?.();
+  });
+  let rangedTimeout = "";
+  try {
+    await page.waitForFunction(
+      () =>
+        window.__danrenZoneDebug
+          ?.()
+          .enemyProjectileTypes?.some(
+            (type) => type === "sylph" || type === "floating-eye"
+          ),
+      null,
+      { timeout: 20000 }
+    );
+  } catch {
+    const state = await page.evaluate(() => ({
+      zone: window.__danrenZoneDebug(),
+      runtime: window.__danrenStateDebug()
+    }));
+    rangedTimeout = JSON.stringify(state);
+  }
+  const ranged = await page.evaluate(() => window.__danrenZoneDebug());
+  check(
+    ranged.enemyProjectileTypes?.some(
+      (type) => type === "sylph" || type === "floating-eye"
+    ),
+    "ALO wind enemies did not fire projectiles",
+    rangedTimeout
+  );
+
+  let liftTimeout = "";
+  try {
+    await page.waitForFunction(
+      () => window.__danrenZoneDebug?.().playerY > 1.5,
+      null,
+      { timeout: 15000 }
+    );
+  } catch {
+    const state = await page.evaluate(() => ({
+      zone: window.__danrenZoneDebug(),
+      runtime: window.__danrenStateDebug()
+    }));
+    liftTimeout = JSON.stringify(state);
+  }
+  const lifted = await page.evaluate(() => window.__danrenZoneDebug());
+  check(
+    lifted.playerY > 1.5,
+    "ALO updraft did not lift the player",
+    liftTimeout
+  );
 } finally {
   await browser.close();
 }

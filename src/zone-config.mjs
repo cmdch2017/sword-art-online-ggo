@@ -63,11 +63,11 @@ const DEFINITIONS = [
       phases: 2
     },
     enemySpawns: [
-      { type: "gull", x: -28, z: 20 },
-      { type: "gull", x: 28, z: 18 },
-      { type: "hound", x: -18, z: -8 },
-      { type: "hound", x: 18, z: -8 },
-      { type: "gull", x: 0, z: -29 },
+      { type: "floating-eye", x: -28, z: 20 },
+      { type: "floating-eye", x: 28, z: 18 },
+      { type: "sylph", x: -18, z: -8 },
+      { type: "sylph", x: 18, z: -8 },
+      { type: "floating-eye", x: 0, z: -29 },
       { type: "bulwark", x: 24, z: -24 }
     ],
     environment: "floating-island",

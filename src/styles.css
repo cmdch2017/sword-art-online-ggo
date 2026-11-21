@@ -136,6 +136,16 @@ button {
   line-height: 1.8;
 }
 
+.title-content > .training-note {
+  max-width: 620px;
+  margin: -16px 0 24px;
+  padding: 9px 12px;
+  border-left: 2px solid var(--teal);
+  color: rgba(236, 241, 237, 0.82);
+  background: rgba(7, 16, 18, 0.72);
+  font: 500 11px/1.65 var(--font-mono);
+}
+
 .title-actions,
 .pause-actions {
   display: flex;
@@ -354,6 +364,13 @@ button {
   justify-self: center;
   min-width: 280px;
   text-align: center;
+}
+
+.zone-label {
+  display: block;
+  color: var(--teal);
+  font: 700 10px/1.35 var(--font-mono);
+  letter-spacing: 0;
 }
 
 .objective-wrap strong {
@@ -1163,6 +1180,11 @@ button {
     font-size: 13px;
   }
 
+  .title-content > .training-note {
+    margin-top: -10px;
+    font-size: 10px;
+  }
+
   .title-side,
   .control-strip {
     display: none;
@@ -1214,6 +1236,14 @@ button {
     justify-self: start;
     min-width: 0;
     text-align: left;
+  }
+
+  .zone-label {
+    max-width: 62vw;
+    overflow: hidden;
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .objective-wrap strong {

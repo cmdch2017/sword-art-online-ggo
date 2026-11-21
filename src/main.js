@@ -81,6 +81,7 @@ const $ = (id) => document.getElementById(id);
 const dom = {
   canvas: $("game"),
   hud: $("hud"),
+  zoneLabel: $("zone-label"),
   objective: $("objective-text"),
   pips: $("uplink-pips"),
   runTime: $("run-time"),
@@ -107,6 +108,7 @@ const dom = {
   interactionBar: $("interaction-bar"),
   objectiveGuide: $("objective-guide"),
   bossHud: $("boss-hud"),
+  bossName: $("boss-name"),
   bossBar: $("boss-bar"),
   bossPhase: $("boss-phase"),
   toast: $("toast"),
@@ -442,11 +444,24 @@ window.__danrenZoneDebug = () => ({
   objectiveCount: activeZone.objectiveCount,
   completedZoneIds: [...campaign.completedZoneIds],
   finalVictory: campaign.finalVictory,
+  playerY: player.position.y,
+  floorHeight: getZoneFloorHeight(player.position.x, player.position.z),
   mechanics: zoneMechanics.map((mechanic) => ({
     id: mechanic.id,
     type: mechanic.type,
     element: mechanic.element || null
   })),
+  enemyTypes: enemies.filter((enemy) => !enemy.dead).map((enemy) => enemy.type),
+  enemyProjectileTypes: [
+    ...new Set(
+      projectiles
+        .filter(
+          (projectile) =>
+            projectile.owner === "enemy" && projectile.sourceEnemyType
+        )
+        .map((projectile) => projectile.sourceEnemyType)
+    )
+  ],
   objectCounts: {
     enemies: enemies.length,
     projectiles: projectiles.length,
@@ -461,6 +476,15 @@ if (new URLSearchParams(window.location.search).has("zone-test")) {
       const objective = terminals.find((candidate) => !candidate.activated);
       if (objective) activateObjective(objective, "test");
     },
+    alertAllEnemies() {
+      for (const enemy of enemies) {
+        if (enemy.dead) continue;
+        enemy.state = "chase";
+        enemy.alertedAt = performance.now();
+        enemy.alertMark.visible = true;
+        enemy.attackCooldown = Math.min(enemy.attackCooldown, 0.12);
+      }
+    },
     defeatBoss() {
       if (!boss || campaign.phase !== CAMPAIGN_PHASE.BOSS) return;
       if (!boss.active) activateBoss();
@@ -469,6 +493,17 @@ if (new URLSearchParams(window.location.search).has("zone-test")) {
     },
     completeExtraction() {
       completeZoneAndAdvance();
+    },
+    placeAtUpdraft(mechanicId) {
+      const updraft = zoneMechanics.find(
+        (mechanic) => mechanic.id === mechanicId && mechanic.type === "updraft"
+      );
+      if (!updraft) return false;
+      player.position.set(updraft.x, 0.25, updraft.z);
+      player.velocity.set(0, 0, 0);
+      player.verticalVelocity = 0;
+      player.grounded = false;
+      return true;
     },
     snapshot() {
       return window.__danrenZoneDebug();
@@ -1247,6 +1282,12 @@ function buildSharedLighting() {
 
 function buildHarborZone() {
   worldRoot.userData.skyMaterial = createSky();
+  hemisphereLight.color.setHex(0x6c9896);
+  hemisphereLight.groundColor.setHex(0x070606);
+  hemisphereLight.intensity = 1.45;
+  directionLight.color.setHex(0xffd2a8);
+  directionLight.intensity = 2.8;
+  directionLight.position.set(-18, 42, 18);
 
   const groundMaterial = createGroundMaterial();
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150, 1, 1), groundMaterial);
@@ -1308,7 +1349,136 @@ function buildHarborZone() {
 }
 
 function buildFloatingIslandZone(zone) {
-  buildZonePlaceholder(zone);
+  const skyMaterial = createSky();
+  worldRoot.userData.skyMaterial = skyMaterial;
+  skyMaterial.uniforms.uTop.value.setHex(0x07151d);
+  skyMaterial.uniforms.uHorizon.value.setHex(0x245d62);
+  skyMaterial.uniforms.uAccent.value.setHex(0x72e6cf);
+
+  hemisphereLight.color.setHex(0x9ed8df);
+  hemisphereLight.groundColor.setHex(0x132734);
+  hemisphereLight.intensity = 1.8;
+  directionLight.color.setHex(0xffe1b2);
+  directionLight.intensity = 3.5;
+  directionLight.position.set(-30, 46, 18);
+
+  const islandMaterial = createMetalMaterial(0x3b8c77, 0x8af1d8, {
+    metalness: 0.08,
+    roughness: 0.72
+  });
+  const stoneMaterial = new THREE.MeshStandardMaterial({
+    color: 0x6e8f78,
+    roughness: 0.82,
+    metalness: 0.12
+  });
+  const islands = [
+    { x: 0, z: 10, radius: 22, height: 3 },
+    { x: 0, z: 39, radius: 7, height: 1.8 },
+    { x: -26, z: 8, radius: 10, height: 2.4 },
+    { x: 26, z: 3, radius: 10, height: 2.4 },
+    { x: 0, z: -25, radius: 13, height: 2.8 }
+  ];
+  worldRoot.userData.islands = islands;
+  for (const { x, z, radius, height } of islands) {
+    const island = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius * 0.58, height, 12),
+      islandMaterial
+    );
+    island.position.set(x, -height / 2, z);
+    island.receiveShadow = true;
+    island.castShadow = true;
+    worldRoot.add(island);
+    const underside = new THREE.Mesh(
+      new THREE.ConeGeometry(radius * 0.56, height * 2.2, 12),
+      stoneMaterial
+    );
+    underside.rotation.z = Math.PI;
+    underside.position.set(x, -height * 1.45, z);
+    underside.castShadow = true;
+    worldRoot.add(underside);
+  }
+
+  const bridgeMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb9d8c6,
+    roughness: 0.62,
+    metalness: 0.18
+  });
+  const bridges = [
+    { x: -13, z: 9, width: 24, depth: 4.2, rotation: 0.1 },
+    { x: 13, z: 7, width: 24, depth: 4.2, rotation: -0.1 },
+    { x: 0, z: -10, width: 4.5, depth: 28, rotation: 0 },
+    { x: 0, z: 35.5, width: 5.2, depth: 8, rotation: 0 }
+  ];
+  worldRoot.userData.bridges = bridges;
+  for (const { x, z, width, depth, rotation } of bridges) {
+    const bridge = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.42, depth),
+      bridgeMaterial
+    );
+    bridge.position.set(x, -0.18, z);
+    bridge.rotation.y = rotation;
+    bridge.receiveShadow = true;
+    worldRoot.add(bridge);
+  }
+
+  worldRoot.userData.updraftVisuals = [];
+  for (const mechanic of zone.mechanics.filter(
+    (item) => item.type === "updraft"
+  )) {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(mechanic.radius, 0.12, 8, 72),
+      createEmissiveMaterial(0x71f5d8, 3.2)
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(mechanic.x, 0.08, mechanic.z);
+    worldRoot.add(ring);
+    const column = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        mechanic.radius * 0.82,
+        mechanic.radius,
+        mechanic.height,
+        24,
+        5,
+        true
+      ),
+      new THREE.MeshBasicMaterial({
+        color: 0x78f4d8,
+        transparent: true,
+        opacity: 0.055,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      })
+    );
+    column.position.set(mechanic.x, mechanic.height / 2, mechanic.z);
+    worldRoot.add(column);
+    worldRoot.userData.updraftVisuals.push({ ring, column });
+  }
+
+  const debrisMaterial = createMetalMaterial(0x294f48, 0x70f0d1, {
+    metalness: 0.22,
+    roughness: 0.68
+  });
+  for (let index = 0; index < 18; index += 1) {
+    const angle = (index / 18) * TAU + randomRange(-0.16, 0.16);
+    const radius = randomRange(31, 48);
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(randomRange(0.55, 1.8), 0),
+      debrisMaterial
+    );
+    rock.position.set(
+      Math.cos(angle) * radius,
+      randomRange(-8, 14),
+      Math.sin(angle) * radius
+    );
+    rock.rotation.set(
+      randomRange(0, TAU),
+      randomRange(0, TAU),
+      randomRange(0, TAU)
+    );
+    worldRoot.add(rock);
+  }
+  buildDust();
 }
 
 function buildWorldTreeZone(zone) {
@@ -1974,6 +2144,46 @@ function resolvePlayerCollisions() {
   player.position.z = clamp(player.position.z, WORLD_LIMIT.minZ + player.radius, WORLD_LIMIT.maxZ - player.radius);
 }
 
+function getZoneFloorHeight(x, z) {
+  if (activeZone.environment !== "floating-island") return 0;
+
+  const islands = worldRoot?.userData.islands || [];
+  if (
+    islands.some(
+      (island) => Math.hypot(x - island.x, z - island.z) <= island.radius - 0.35
+    )
+  ) {
+    return 0;
+  }
+
+  const bridges = worldRoot?.userData.bridges || [];
+  const onBridge = bridges.some((bridge) => {
+    const offsetX = x - bridge.x;
+    const offsetZ = z - bridge.z;
+    const cosine = Math.cos(-bridge.rotation);
+    const sine = Math.sin(-bridge.rotation);
+    const localX = offsetX * cosine - offsetZ * sine;
+    const localZ = offsetX * sine + offsetZ * cosine;
+    return (
+      Math.abs(localX) <= bridge.width / 2 - 0.25 &&
+      Math.abs(localZ) <= bridge.depth / 2 - 0.25
+    );
+  });
+  return onBridge ? 0 : -18;
+}
+
+function recoverFromFalling() {
+  if (player.position.y > -17) return;
+  const fallPosition = player.position.clone().setY(0);
+  damagePlayer(24, fallPosition);
+  player.position.set(activeZone.spawn.x, activeZone.spawn.y, activeZone.spawn.z);
+  player.velocity.set(0, 0, 0);
+  player.verticalVelocity = 0;
+  player.grounded = true;
+  app.cameraShake = Math.max(app.cameraShake, 0.32);
+  showToast("脱离浮岛边界 // 紧急传返重生点", 1800);
+}
+
 function updatePlayer(dt) {
   const padForward = input.padForward || 0;
   const padRight = input.padRight || 0;
@@ -2017,8 +2227,9 @@ function updatePlayer(dt) {
   const impactSpeed = player.grounded ? 0 : Math.max(0, -player.verticalVelocity);
   player.verticalVelocity -= 20.5 * dt;
   player.position.y += player.verticalVelocity * dt;
-  if (player.position.y <= 0) {
-    player.position.y = 0;
+  const floorHeight = getZoneFloorHeight(player.position.x, player.position.z);
+  if (player.position.y <= floorHeight) {
+    player.position.y = floorHeight;
     player.verticalVelocity = 0;
     player.grounded = true;
   }
@@ -3141,7 +3352,43 @@ const enemyDefinitions = {
     attackDelay: 1.62,
     damage: 11,
     color: 0xff9944,
-    scale: 1
+    scale: 1,
+    ranged: true,
+    projectileSpeed: 29,
+    projectileRadius: 0.13,
+    spreadProfile: "gull"
+  },
+  sylph: {
+    health: 72,
+    speed: 3.8,
+    detect: 32,
+    attackRange: 24,
+    attackDelay: 1.48,
+    damage: 10,
+    color: 0x70f0d1,
+    scale: 0.96,
+    hoverHeight: 0.42,
+    ranged: true,
+    projectileSpeed: 23,
+    projectileRadius: 0.14,
+    spreadProfile: "gull",
+    projectileKind: "wind"
+  },
+  "floating-eye": {
+    health: 64,
+    speed: 2.7,
+    detect: 34,
+    attackRange: 30,
+    attackDelay: 1.75,
+    damage: 12,
+    color: 0xa6ecff,
+    scale: 1.08,
+    hoverHeight: 1.35,
+    ranged: true,
+    projectileSpeed: 20,
+    projectileRadius: 0.17,
+    spreadProfile: "gull",
+    projectileKind: "wind"
   },
   bulwark: {
     health: 148,
@@ -3151,14 +3398,18 @@ const enemyDefinitions = {
     attackDelay: 2.25,
     damage: 16,
     color: 0xd63d55,
-    scale: 1.22
+    scale: 1.22,
+    ranged: true,
+    projectileSpeed: 24,
+    projectileRadius: 0.18,
+    spreadProfile: "bulwark"
   }
 };
 
 function createEnemy(type, x, z, alerted = false) {
   const definition = enemyDefinitions[type] || enemyDefinitions.hound;
   const group = new THREE.Group();
-  group.position.set(x, 0, z);
+  group.position.set(x, definition.hoverHeight || 0, z);
   group.scale.setScalar(definition.scale);
 
   const bodyMaterial = new THREE.MeshStandardMaterial({
@@ -3232,15 +3483,29 @@ function createEnemy(type, x, z, alerted = false) {
 
   let gunTip = null;
   let weaponMesh = null;
-  if (type === "gull" || type === "bulwark") {
-    weaponMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.17, 0.17, type === "bulwark" ? 1.1 : 0.82),
-      createMetalMaterial(0x515b5c, definition.color)
+  if (definition.ranged) {
+    const elementalCaster = type === "sylph" || type === "floating-eye";
+    weaponMesh = elementalCaster
+      ? new THREE.Mesh(
+          new THREE.IcosahedronGeometry(type === "floating-eye" ? 0.24 : 0.17, 1),
+          createEmissiveMaterial(definition.color, type === "floating-eye" ? 4.2 : 3.2)
+        )
+      : new THREE.Mesh(
+          new THREE.BoxGeometry(0.17, 0.17, type === "bulwark" ? 1.1 : 0.82),
+          createMetalMaterial(0x515b5c, definition.color)
+        );
+    weaponMesh.position.set(
+      0,
+      elementalCaster ? -0.64 : -0.58,
+      elementalCaster ? -0.36 : -0.42
     );
-    weaponMesh.position.set(0, -0.58, -0.42);
     rightArm.add(weaponMesh);
     gunTip = new THREE.Object3D();
-    gunTip.position.set(0, -0.58, type === "bulwark" ? -1.02 : -0.89);
+    gunTip.position.set(
+      0,
+      elementalCaster ? -0.64 : -0.58,
+      elementalCaster ? -0.54 : type === "bulwark" ? -1.02 : -0.89
+    );
     rightArm.add(gunTip);
   } else {
     weaponMesh = new THREE.Mesh(
@@ -3265,7 +3530,7 @@ function createEnemy(type, x, z, alerted = false) {
     })
   );
   floorRing.rotation.x = -Math.PI / 2;
-  floorRing.position.y = 0.026;
+  floorRing.position.y = 0.026 - (definition.hoverHeight || 0);
   group.add(floorRing);
 
   const alertMark = new THREE.Mesh(
@@ -3485,21 +3750,21 @@ function updateEnemies(dt, now) {
 }
 
 function fireEnemyProjectile(enemy) {
-  if (!enemy.gunTip) return;
+  if (!enemy.gunTip || !enemy.definition.ranged) return;
   const origin = enemy.gunTip.getWorldPosition(new THREE.Vector3());
   const target = player.position.clone().add(new THREE.Vector3(0, 1.05, 0));
   target.x += player.velocity.x * 0.08;
   target.z += player.velocity.z * 0.08;
   const direction = target.sub(origin).normalize();
   const spread =
-    enemy.type === "bulwark"
+    enemy.definition.spreadProfile === "bulwark"
       ? TRAINING_PROFILE.enemy.spread.bulwark
       : TRAINING_PROFILE.enemy.spread.gull;
   direction.x += randomRange(-spread, spread);
   direction.y += randomRange(-spread * 0.5, spread * 0.5);
   direction.z += randomRange(-spread, spread);
   direction.normalize();
-  const speed = enemy.type === "bulwark" ? 24 : 29;
+  const speed = enemy.definition.projectileSpeed || 29;
   spawnProjectile({
     owner: "enemy",
     x: origin.x,
@@ -3510,11 +3775,13 @@ function fireEnemyProjectile(enemy) {
     vz: direction.z * speed,
     speed,
     damage: enemy.definition.damage,
-    radius: enemy.type === "bulwark" ? 0.18 : 0.13,
+    radius: enemy.definition.projectileRadius || 0.13,
     color: enemy.definition.color,
-    sourceEnemyId: enemy.id
+    kind: enemy.definition.projectileKind || "enemy-shot",
+    sourceEnemyId: enemy.id,
+    sourceEnemyType: enemy.type
   });
-  audio?.enemyShoot(origin, enemy.type === "bulwark");
+  audio?.enemyShoot(origin, enemy.definition.spreadProfile === "bulwark");
 }
 
 function hitEnemy(enemy, damage, headshot, melee, magicElement = null) {
@@ -5351,6 +5618,10 @@ function updateObjectiveGuide() {
 function updateUi(dt) {
   if (!app.started) return;
   dom.runTime.textContent = formatTime(app.elapsed);
+  if (dom.zoneLabel) {
+    dom.zoneLabel.textContent =
+      `${String(campaign.zoneIndex + 1).padStart(2, "0")} // ${activeZone.name}`;
+  }
   dom.healthValue.textContent = String(Math.ceil(player.health));
   dom.staminaValue.textContent = String(Math.ceil(player.stamina));
   dom.healthBar.style.width = `${(player.health / player.maxHealth) * 100}%`;
@@ -5430,6 +5701,7 @@ function updateUi(dt) {
   dom.bossHud.classList.toggle("hidden", !bossVisible);
   if (bossVisible) {
     dom.bossBar.style.width = `${(boss.health / boss.maxHealth) * 100}%`;
+    if (dom.bossName) dom.bossName.textContent = boss.name;
     dom.bossPhase.textContent = boss.phase === 2 ? "PHASE II" : "PHASE I";
   }
 
@@ -5655,7 +5927,38 @@ function disposeZone() {
   app.lightning = 0;
 }
 
-function updateZoneMechanisms() {}
+function updateUpdraftMechanic(mechanic, dt) {
+  const distance = Math.hypot(
+    player.position.x - mechanic.x,
+    player.position.z - mechanic.z
+  );
+  if (distance > mechanic.radius || player.position.y > mechanic.height) return;
+
+  const influence = 1 - distance / mechanic.radius;
+  const targetLift = mechanic.lift * (0.68 + influence * 0.42);
+  player.verticalVelocity = Math.min(
+    targetLift,
+    Math.max(mechanic.lift * 0.35, player.verticalVelocity) + targetLift * dt
+  );
+  player.grounded = false;
+}
+
+function updateZoneMechanisms(dt, now) {
+  const updraftVisuals = worldRoot?.userData.updraftVisuals || [];
+  for (let index = 0; index < updraftVisuals.length; index += 1) {
+    const visual = updraftVisuals[index];
+    visual.ring.rotation.z += dt * (0.42 + index * 0.08);
+    const pulse = 1 + Math.sin(now * 0.003 + index) * 0.035;
+    visual.ring.scale.setScalar(pulse);
+    visual.column.material.opacity = 0.045 + Math.sin(now * 0.0025 + index) * 0.014;
+  }
+
+  if (activeZone.environment === "floating-island") {
+    for (const mechanic of zoneMechanics) {
+      if (mechanic.type === "updraft") updateUpdraftMechanic(mechanic, dt);
+    }
+  }
+}
 
 function updateZoneHud() {
   updateUi(0);
@@ -5796,6 +6099,7 @@ function updateGame(dt, now) {
   updateProjectiles(dt);
   updateExtractionPoint(dt, now);
   updateZoneMechanisms(dt, now);
+  recoverFromFalling();
   updateTransientEffects(dt);
   updateCombatFeedback(combatFeedback, dt);
   updateMagicChargeEffect(dt, now);
