@@ -423,8 +423,12 @@ window.__danrenStateDebug = () => ({
   },
   boss: boss
     ? {
+        id: boss.id,
+        name: boss.name,
         active: boss.active,
         dying: boss.dying,
+        phase: boss.phase,
+        attackIndex: boss.attackIndex,
         health: boss.health,
         maxHealth: boss.maxHealth,
         x: boss.group.position.x,
@@ -462,6 +466,8 @@ window.__danrenZoneDebug = () => ({
         .map((projectile) => projectile.sourceEnemyType)
     )
   ],
+  safeZoneCount: worldRoot?.userData.coreSafeZones?.length || 0,
+  corePulseCount: worldRoot?.userData.corePulse?.count || 0,
   objectCounts: {
     enemies: enemies.length,
     projectiles: projectiles.length,
@@ -503,6 +509,30 @@ if (new URLSearchParams(window.location.search).has("zone-test")) {
       player.velocity.set(0, 0, 0);
       player.verticalVelocity = 0;
       player.grounded = false;
+      return true;
+    },
+    prepareCorePulseTest(mode = "danger") {
+      const safeZone = worldRoot?.userData.coreSafeZones?.[0];
+      const position =
+        mode === "safe" && safeZone
+          ? safeZone
+          : { x: 0, z: -20 };
+      player.position.set(position.x, 0, position.z);
+      player.velocity.set(0, 0, 0);
+      player.verticalVelocity = 0;
+      player.grounded = true;
+      player.health = player.maxHealth;
+      player.invulnerable = 0;
+      app.lastDamageAt = app.elapsed;
+      return true;
+    },
+    triggerCorePulse() {
+      return triggerWorldTreePulse(performance.now(), true);
+    },
+    damageBossToPhaseTwo() {
+      if (!boss) return false;
+      if (!boss.active) activateBoss();
+      damageBoss(boss.maxHealth * 0.55, false, false);
       return true;
     },
     snapshot() {
@@ -1482,7 +1512,286 @@ function buildFloatingIslandZone(zone) {
 }
 
 function buildWorldTreeZone(zone) {
-  buildZonePlaceholder(zone);
+  const skyMaterial = createSky();
+  worldRoot.userData.skyMaterial = skyMaterial;
+  skyMaterial.uniforms.uTop.value.setHex(0x0d0906);
+  skyMaterial.uniforms.uHorizon.value.setHex(0x49331e);
+  skyMaterial.uniforms.uAccent.value.setHex(0xe5cb6a);
+
+  hemisphereLight.color.setHex(0x718072);
+  hemisphereLight.groundColor.setHex(0x160c06);
+  hemisphereLight.intensity = 1.22;
+  directionLight.color.setHex(0xffd18a);
+  directionLight.intensity = 2.9;
+  directionLight.position.set(20, 48, -16);
+
+  const rootMaterial = createMetalMaterial(0x3c2b1d, 0xe5cb6a, {
+    metalness: 0.18,
+    roughness: 0.73,
+    emissive: 0x150a03,
+    emissiveIntensity: 0.3
+  });
+  const barkMaterial = new THREE.MeshStandardMaterial({
+    color: 0x24170f,
+    roughness: 0.9,
+    metalness: 0.04,
+    emissive: 0x100603,
+    emissiveIntensity: 0.18
+  });
+  const stoneMaterial = createMetalMaterial(0x302a20, 0xe5cb6a, {
+    metalness: 0.12,
+    roughness: 0.82
+  });
+  const coreMaterial = createEmissiveMaterial(0xf1d77a, 4.2);
+
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      zone.bounds.maxX - zone.bounds.minX,
+      0.5,
+      zone.bounds.maxZ - zone.bounds.minZ
+    ),
+    createMetalMaterial(0x211b15, 0xc7af58, {
+      metalness: 0.08,
+      roughness: 0.84
+    })
+  );
+  floor.position.set(
+    (zone.bounds.minX + zone.bounds.maxX) / 2,
+    -0.25,
+    (zone.bounds.minZ + zone.bounds.maxZ) / 2
+  );
+  floor.receiveShadow = true;
+  floor.name = "WorldTreeRootFloor";
+  worldRoot.add(floor);
+
+  const rootBed = new THREE.Mesh(
+    new THREE.CylinderGeometry(23, 29, 1.2, 18),
+    stoneMaterial
+  );
+  rootBed.position.set(0, -0.5, -18);
+  rootBed.receiveShadow = true;
+  rootBed.castShadow = true;
+  worldRoot.add(rootBed);
+
+  const centralTrunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(8.5, 13, 24, 12, 4),
+    barkMaterial
+  );
+  centralTrunk.position.set(0, 11.5, -35);
+  centralTrunk.castShadow = true;
+  centralTrunk.receiveShadow = true;
+  worldRoot.add(centralTrunk);
+
+  for (let index = 0; index < 18; index += 1) {
+    const angle = (index / 18) * TAU + randomRange(-0.12, 0.12);
+    const start = new THREE.Vector3(
+      randomRange(-2.5, 2.5),
+      randomRange(1.5, 8),
+      -34 + randomRange(-2, 2)
+    );
+    const end = new THREE.Vector3(
+      Math.cos(angle) * randomRange(22, 38),
+      randomRange(-0.4, 0.6),
+      -16 + Math.sin(angle) * randomRange(26, 45)
+    );
+    addRootSegment(
+      worldRoot,
+      start,
+      end,
+      randomRange(1.2, 2.2),
+      randomRange(0.16, 0.42),
+      index % 3 === 0 ? rootMaterial : barkMaterial
+    );
+  }
+
+  for (const [x, z, rotation] of [
+    [-25, 18, -0.65],
+    [26, 13, 0.72],
+    [-28, -14, 0.48],
+    [27, -25, -0.54]
+  ]) {
+    const buttress = new THREE.Mesh(
+      new THREE.ConeGeometry(randomRange(4.5, 6.2), randomRange(8, 13), 6),
+      barkMaterial
+    );
+    buttress.position.set(x, 4.2, z);
+    buttress.rotation.z = rotation;
+    buttress.castShadow = true;
+    buttress.receiveShadow = true;
+    worldRoot.add(buttress);
+  }
+
+  const ascentPlatforms = [];
+  for (let step = 0; step < 6; step += 1) {
+    const height = (step + 1) * 0.88;
+    const radius = 4.4 - step * 0.34;
+    const x = Math.sin(step * 1.45) * 1.5;
+    const z = 14 - step * 6.3;
+    const platform = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius * 1.08, 0.46, 10),
+      createMetalMaterial(0x31291d, 0xd9c66f, {
+        metalness: 0.28,
+        roughness: 0.66
+      })
+    );
+    platform.position.set(x, height - 0.23, z);
+    platform.castShadow = true;
+    platform.receiveShadow = true;
+    worldRoot.add(platform);
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(radius * 0.9, 0.035, 5, 48),
+      createEmissiveMaterial(0xe4cd78, 2.8, true, 0.62)
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(x, height + 0.03, z);
+    worldRoot.add(rim);
+    ascentPlatforms.push({ id: `ascent-${step + 1}`, x, z, height, radius });
+  }
+  worldRoot.userData.ascentPlatforms = ascentPlatforms;
+
+  const safeZoneDefinitions = [
+    { id: "safe-west", x: -25, z: 19, radius: 4.2 },
+    { id: "safe-east", x: 25, z: -20, radius: 4.4 },
+    { id: "safe-entry", x: 16, z: 25, radius: 4.0 }
+  ];
+  worldRoot.userData.safeZoneVisuals = [];
+  for (const [index, safeZone] of safeZoneDefinitions.entries()) {
+    const shelter = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        safeZone.radius,
+        safeZone.radius * 1.08,
+        0.34,
+        12
+      ),
+      createMetalMaterial(0x29251b, 0xe5cb6a, {
+        metalness: 0.22,
+        roughness: 0.68
+      })
+    );
+    shelter.position.set(safeZone.x, 0.17, safeZone.z);
+    shelter.receiveShadow = true;
+    worldRoot.add(shelter);
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(safeZone.radius * 0.78, 0.055, 6, 54),
+      createEmissiveMaterial(0xe4cd78, 3.2, true, 0.82)
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(safeZone.x, 0.38, safeZone.z);
+    worldRoot.add(ring);
+    const shelterLight = new THREE.PointLight(
+      0xe4cd78,
+      15 + index * 2,
+      safeZone.radius * 2.4,
+      2
+    );
+    shelterLight.position.set(safeZone.x, 2.2, safeZone.z);
+    worldRoot.add(shelterLight);
+    worldRoot.userData.safeZoneVisuals.push({ ring, light: shelterLight, index });
+  }
+  worldRoot.userData.coreSafeZones = safeZoneDefinitions;
+
+  const coreColumn = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.4, 7.8, 31, 14, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xf0d779,
+      transparent: true,
+      opacity: 0.075,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  coreColumn.position.set(0, 15.5, -31);
+  worldRoot.add(coreColumn);
+
+  const coreCrystal = new THREE.Mesh(
+    new THREE.OctahedronGeometry(3.25, 1),
+    coreMaterial
+  );
+  coreCrystal.position.set(0, 9, -31);
+  coreCrystal.castShadow = true;
+  worldRoot.add(coreCrystal);
+  worldRoot.userData.coreCrystal = coreCrystal;
+  worldRoot.userData.coreColumn = coreColumn;
+
+  const coreRings = [];
+  for (const [radius, tilt, y] of [
+    [5.1, 0.32, 9],
+    [6.8, -0.22, 8.4],
+    [8.2, 0.1, 10.2]
+  ]) {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, 0.07, 7, 76),
+      createEmissiveMaterial(0xe7d070, 3.8, true, 0.82)
+    );
+    ring.position.set(0, y, -31);
+    ring.rotation.x = Math.PI / 2 + tilt;
+    worldRoot.add(ring);
+    coreRings.push(ring);
+  }
+  worldRoot.userData.coreRings = coreRings;
+
+  const coreLight = new THREE.PointLight(0xf1d77a, 62, 43, 2);
+  coreLight.position.set(0, 9, -30);
+  worldRoot.add(coreLight);
+  worldRoot.userData.coreLight = coreLight;
+
+  const pulseMechanic = zone.mechanics.find((mechanic) => mechanic.type === "pulse");
+  worldRoot.userData.corePulse = {
+    count: 0,
+    interval: pulseMechanic?.interval || 4.5,
+    nextAt: performance.now() + (pulseMechanic?.interval || 4.5) * 1000
+  };
+
+  buildDust();
+}
+
+function addRootSegment(parent, start, end, startRadius, endRadius, material) {
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  const root = new THREE.Mesh(
+    new THREE.CylinderGeometry(endRadius, startRadius, length, 7, 3),
+    material
+  );
+  root.position.copy(start).add(end).multiplyScalar(0.5);
+  root.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction.normalize()
+  );
+  root.castShadow = true;
+  root.receiveShadow = true;
+  parent.add(root);
+  return root;
+}
+
+function triggerWorldTreePulse(now, force = false) {
+  if (activeZone.id !== "world-tree-core") return false;
+  const pulse = worldRoot?.userData.corePulse;
+  if (!pulse || (!force && now < pulse.nextAt)) return false;
+
+  pulse.nextAt = now + pulse.interval * 1000;
+  pulse.lastPulseAt = now;
+  pulse.count += 1;
+  pulse.flash = 1;
+
+  const origin = new THREE.Vector3(0, 0, -20);
+  const safeZones = worldRoot.userData.coreSafeZones || [];
+  const protectedByRoot = safeZones.some(
+    (zone) =>
+      Math.hypot(player.position.x - zone.x, player.position.z - zone.z) <=
+      zone.radius
+  );
+
+  spawnShockwave(origin.clone().setY(0.08), 0.8, 26, 0xe2cb70, 1.1, false);
+  spawnBurst(origin.clone().setY(1.2), 0xe7d070, 42, 8, 0.82);
+  audio?.bossSlam();
+
+  if (!protectedByRoot && player.position.y < 1.1) {
+    damagePlayer(9, origin);
+    app.cameraShake = Math.max(app.cameraShake, 0.28);
+  }
+
+  return true;
 }
 
 function buildZonePlaceholder(zone) {
@@ -4147,6 +4456,7 @@ function createBoss(zone) {
   boss = {
     id: zone.boss.id,
     name: zone.boss.name,
+    zoneId: zone.id,
     accent,
     group,
     armor,
@@ -4194,6 +4504,7 @@ function activateBoss() {
 
 function updateBoss(dt, now) {
   if (!boss || !boss.active) return;
+  const finalBoss = boss.zoneId === "world-tree-core";
   const position = boss.group.position;
   const dx = player.position.x - position.x;
   const dz = player.position.z - position.z;
@@ -4237,7 +4548,7 @@ function updateBoss(dt, now) {
   const healthRatio = boss.health / boss.maxHealth;
   if (healthRatio <= 0.48 && boss.phase === 1) {
     boss.phase = 2;
-    boss.attackCooldown = 1.3;
+    boss.attackCooldown = finalBoss ? 0.95 : 1.3;
     boss.targetBeam.material.color.setHex(
       activeZone.id === "ggo-harbor" ? COLORS.amber : boss.accent
     );
@@ -4270,10 +4581,12 @@ function updateBoss(dt, now) {
       boss.attackIndex += 1;
       bossBurstAttack();
     } else {
-      boss.attackCooldown = 1.25;
+      boss.attackCooldown = finalBoss ? 0.95 : 1.25;
       boss.attackIndex += 1;
       const pattern = boss.attackIndex % 4;
-      if (pattern === 0) bossRadialAttack();
+      if (pattern === 0) {
+        bossRadialAttack(finalBoss ? 10 : 12, finalBoss ? 0.36 : 1);
+      }
       else if (pattern === 1) bossBurstAttack(true);
       else if (pattern === 2) {
       spawnShockwave(position.clone(), 1.2, 14, boss.accent, 1.05);
@@ -5768,6 +6081,7 @@ function togglePause(force) {
 
 function finishGame(victory) {
   if (app.ended) return;
+  clearDynamicEntities();
   app.running = false;
   app.ended = true;
   app.paused = false;
@@ -5956,6 +6270,39 @@ function updateZoneMechanisms(dt, now) {
   if (activeZone.environment === "floating-island") {
     for (const mechanic of zoneMechanics) {
       if (mechanic.type === "updraft") updateUpdraftMechanic(mechanic, dt);
+    }
+  }
+
+  if (activeZone.environment === "world-tree-root") {
+    const pulse = worldRoot?.userData.corePulse;
+    const crystal = worldRoot?.userData.coreCrystal;
+    const rings = worldRoot?.userData.coreRings || [];
+    const coreLight = worldRoot?.userData.coreLight;
+    const safeZoneVisuals = worldRoot?.userData.safeZoneVisuals || [];
+
+    if (pulse) {
+      pulse.flash = Math.max(0, (pulse.flash || 0) - dt * 1.7);
+      if (now >= pulse.nextAt) triggerWorldTreePulse(now);
+    }
+    if (crystal) {
+      crystal.rotation.x += dt * 0.22;
+      crystal.rotation.y += dt * 0.38;
+      const beat = 1 + Math.sin(now * 0.0042) * 0.045 + (pulse?.flash || 0) * 0.12;
+      crystal.scale.setScalar(beat);
+    }
+    for (let index = 0; index < rings.length; index += 1) {
+      const ring = rings[index];
+      ring.rotation.z += dt * (0.16 + index * 0.09);
+      ring.scale.setScalar(1 + (pulse?.flash || 0) * (0.08 + index * 0.035));
+    }
+    if (coreLight) {
+      coreLight.intensity =
+        48 + Math.sin(now * 0.005) * 8 + (pulse?.flash || 0) * 34;
+    }
+    for (const visual of safeZoneVisuals) {
+      visual.ring.rotation.z += dt * (0.22 + visual.index * 0.04);
+      visual.light.intensity =
+        17 + visual.index * 2 + Math.sin(now * 0.004 + visual.index) * 3;
     }
   }
 }

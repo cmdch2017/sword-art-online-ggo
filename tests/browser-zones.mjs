@@ -143,6 +143,125 @@ try {
     "ALO updraft did not lift the player",
     liftTimeout
   );
+
+  await page.evaluate(() => {
+    const test = window.__danrenZoneTest;
+    test.activateNextObjective();
+    test.activateNextObjective();
+    test.activateNextObjective();
+    test.defeatBoss();
+    test.completeExtraction();
+  });
+  await page.waitForFunction(
+    () => window.__danrenZoneDebug?.().zoneId === "world-tree-core",
+    null,
+    { timeout: 15000 }
+  );
+
+  const core = await page.evaluate(() => ({
+    ...window.__danrenZoneDebug(),
+    zoneLabel: document.querySelector("#zone-label")?.textContent || ""
+  }));
+  check(core.zoneIndex === 2, "zone index did not advance to world tree");
+  check(core.zoneName.includes("世界树根"), "world tree zone name is missing");
+  check(core.objectiveCount === 2, "world tree seal count is wrong");
+  check(
+    core.mechanics.some((mechanic) => mechanic.type === "pulse"),
+    "world tree core pulse is missing"
+  );
+  check(
+    core.mechanics.some((mechanic) => mechanic.type === "vertical-ruin"),
+    "world tree ascent mechanic is missing"
+  );
+  check(core.objectCounts.projectiles === 0, "ALO projectiles survived transition");
+  check(
+    core.objectCounts.zoneObjects >= 24,
+    "world tree geometry is still a placeholder"
+  );
+  check(core.safeZoneCount >= 3, "world tree safe zones are missing");
+  check(core.zoneLabel.includes("世界树根"), "world tree HUD label is missing");
+
+  await page.evaluate(() => {
+    const test = window.__danrenZoneTest;
+    test.prepareCorePulseTest("danger");
+    test.triggerCorePulse();
+  });
+  await page.waitForFunction(
+    () => window.__danrenStateDebug?.().player.health < 180,
+    null,
+    { timeout: 5000 }
+  );
+  const pulseDamage = await page.evaluate(() => window.__danrenStateDebug().player.health);
+  check(pulseDamage < 180, "core pulse did not damage exposed player");
+
+  await page.evaluate(() => {
+    const test = window.__danrenZoneTest;
+    test.prepareCorePulseTest("safe");
+    test.triggerCorePulse();
+  });
+  await page.waitForTimeout(250);
+  const safeHealth = await page.evaluate(
+    () => window.__danrenStateDebug().player.health
+  );
+  check(safeHealth === 180, "world tree safe zone did not block core pulse");
+
+  await page.evaluate(() => {
+    const test = window.__danrenZoneTest;
+    test.activateNextObjective();
+    test.activateNextObjective();
+    test.damageBossToPhaseTwo();
+  });
+  await page.waitForFunction(
+    () => window.__danrenStateDebug?.().boss?.phase === 2,
+    null,
+    { timeout: 5000 }
+  );
+  const bossPhase = await page.evaluate(() => ({
+    boss: window.__danrenStateDebug().boss,
+    objective: document.querySelector("#objective-text")?.textContent || "",
+    bossName: document.querySelector("#boss-name")?.textContent || ""
+  }));
+  check(
+    bossPhase.boss?.id === "yggdrasil-core",
+    "final boss identity is not configured"
+  );
+  check(
+    bossPhase.boss?.name?.includes("YGGDRASIL CORE"),
+    "final boss name is wrong",
+    JSON.stringify(bossPhase)
+  );
+  check(
+    bossPhase.objective.includes("YGGDRASIL CORE"),
+    "final boss identity is missing from the HUD"
+  );
+
+  await page.evaluate(() => {
+    const test = window.__danrenZoneTest;
+    test.defeatBoss();
+    test.completeExtraction();
+  });
+  await page.waitForFunction(
+    () => window.__danrenZoneDebug?.().finalVictory === true,
+    null,
+    { timeout: 15000 }
+  );
+  await page.waitForFunction(
+    () => !document.querySelector("#end-screen")?.classList.contains("hidden"),
+    null,
+    { timeout: 15000 }
+  );
+
+  const final = await page.evaluate(() => ({
+    ...window.__danrenZoneDebug(),
+    endCopy: document.querySelector("#end-copy")?.textContent || ""
+  }));
+  check(final.phase === "victory", "campaign did not reach victory");
+  check(final.completedZoneIds.length === 3, "not all zones were recorded complete");
+  check(final.objectCounts.enemies === 0, "final victory left enemies running");
+  check(final.objectCounts.projectiles === 0, "final victory left projectiles active");
+  check(final.objectCounts.objectives === 0, "final victory left objectives active");
+  check(final.endCopy.includes("三区战役完成"), "final victory copy is wrong");
+  await page.screenshot({ path: "artifacts/three-zone-victory.png" });
 } finally {
   await browser.close();
 }
